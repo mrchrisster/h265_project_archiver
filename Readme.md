@@ -43,12 +43,19 @@
 
 ---
 
+## Requirements
+- **You must have one watch folder present in Adobe Media Encoder. This script will update the watch folder location to be on the same drive as the project, so the path you choose for your watch folder doesn't matter.**
+- Create wtach folder in AME by going to File -> Add Watch Folder
+
+---
+
 ## Usage
 
 1. **Configure Defaults:**  
    Edit the user-defined defaults at the top of the script (source folder, watch folder, backup drive) to match your environment.
+   
 
-2. **Run the Script:**  
-   Execute the PowerShell script (`watch.ps1`) from a command prompt or PowerShell session:
+3. **Run the Script:**  
+   Execute the PowerShell script (`h265_project_archiver.ps1`) from a command prompt or PowerShell session:
    ```powershell
-   .\watch.ps1
+   .\h265_project_archiver.ps1
