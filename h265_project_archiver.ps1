@@ -8,6 +8,10 @@ $PredefinedSourceFolder = ""     # Ensure trailing backslash
 $PredefinedWatchFolder  = ""     # Leave empty to auto-set (default: same drive as source)
 $PredefinedBackupDrive  = ""     # Leave empty to auto-set (default: same drive as source)
 
+$watchFolderInfoPath = "C:\Users\christoph\Documents\Adobe\Adobe Media Encoder\25.0\Watch Folder Info.xml"
+$videoExtensions = @(".mxf", ".mp4", ".mov", ".crm", ".avi")
+
+
 # ----- Helper Functions -----
 
 # Converts a byte value into a human-readable string (GB/MB)
@@ -269,7 +273,6 @@ Write-Host "Pre-check complete: No source files remain in the watch folder." -Fo
 # ------------------------------------------
 # 3. Configuration Variables and Backup Destination Setup
 # ------------------------------------------
-$videoExtensions = @(".mxf", ".mp4", ".mov", ".crm", ".avi")
 if (-not [string]::IsNullOrEmpty($PredefinedBackupDrive)) {
     $backupDrive = $PredefinedBackupDrive
 } else {
@@ -285,7 +288,6 @@ Write-Host "-----------------------------------------"
 # ------------------------------------------
 # 3.5. Update Watch Folder Info, Perform Space Check, and Restart AME
 # ------------------------------------------
-$watchFolderInfoPath = "C:\Users\christoph\Documents\Adobe\Adobe Media Encoder\25.0\Watch Folder Info.xml"
 if (Test-Path $watchFolderInfoPath) {
     try {
         [xml]$xml = Get-Content $watchFolderInfoPath
