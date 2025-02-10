@@ -1,4 +1,5 @@
-[[https://github.com/mrchrisster/h265_project_archiver/blob/main/media/ame.png]]
+![AME](https://github.com/mrchrisster/h265_project_archiver/blob/main/media/ame.png)
+![Powershell](https://github.com/mrchrisster/h265_project_archiver/blob/main/media/output.png)
 
 # H265 Project Transcoder
 
