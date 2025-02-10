@@ -1,0 +1,54 @@
+# H265 Project Transcoder
+
+**H265 Project Transcoder** is an automated PowerShell solution that streamlines the workflow for video backup, encoding, and file management. Designed to integrate seamlessly with Adobe Media Encoder (AME), this project handles the entire process from verifying source files to moving and encoding video files using the H.265 (HEVC) codec.
+
+---
+
+## Key Features
+
+- **Source Files Pre-Check & Tracking:**  
+  - Scans the designated source folder and generates (or updates) a JSON file list to track all source files.
+  - Excludes files with base names ending in `_proxy` to avoid processing proxy files.
+
+- **Watch Folder Automation:**  
+  - Configures a watch folder that AME monitors.
+  - Moves video files from the source folder into the watch folder to trigger encoding.
+  - Automatically retrieves and restores source files after the encoding process is complete.
+
+- **Automated Video Encoding & Backup:**  
+  - Supports multiple video file formats (e.g., `.mxf`, `.mp4`, `.mov`, `.crm`, `.avi`).
+  - For video files, changes the extension to `.mp4` post-encoding and organizes them into a backup destination.
+  - Performs a free space check on the backup drive before processing to ensure sufficient storage.
+
+- **Robust Error Handling & Recovery:**  
+  - Implements retry loops with diagnostic logging to check file stability and locks.
+  - Logs detailed file size and timestamp information if a file is locked or unstable.
+  - Continues processing even if individual file moves fail, with built-in recovery on script restart.
+
+- **Clean-Up Operations:**  
+  - Automatically removes empty subfolders from both the watch folder and the source folder after files are moved.
+  - Ensures the workspace remains tidy without manual intervention.
+
+- **Adobe Media Encoder Integration:**  
+  - Monitors and restarts AME as needed to maintain a seamless encoding pipeline.
+  - Automatically updates AME’s watch folder configuration for consistency.
+
+---
+
+## Requirements
+
+- **Operating System:** Windows (with PowerShell 5.1 or later)
+- **Software:** Adobe Media Encoder (compatible version, e.g., 25.0)
+- **Directories:** Access to a defined source folder, watch folder, and backup drive
+
+---
+
+## Usage
+
+1. **Configure Defaults:**  
+   Edit the user-defined defaults at the top of the script (source folder, watch folder, backup drive) to match your environment.
+
+2. **Run the Script:**  
+   Execute the PowerShell script (`watch.ps1`) from a command prompt or PowerShell session:
+   ```powershell
+   .\watch.ps1
