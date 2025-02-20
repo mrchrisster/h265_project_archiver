@@ -1,16 +1,40 @@
 # ============================================
 # Full Script: Source Files Pre-Check, Recovery, Processing,
-# Auto-Restoration, Watch Folder Setup, Space Check, and AME Restart
+# Auto-Restoration, Watch Folder Setup, Space Check, AME Restart,
+# and Adaptive Encoding Progress Estimation
 # ============================================
 
 # ----- User-Defined Defaults -----
-$PredefinedSourceFolder = ""     # Ensure trailing backslash
-$PredefinedWatchFolder  = ""     # Leave empty to auto-set (default: same drive as source)
-$PredefinedBackupDrive  = ""     # Leave empty to auto-set (default: same drive as source)
-
-$watchFolderInfoPath = "C:\Users\christoph\Documents\Adobe\Adobe Media Encoder\25.0\Watch Folder Info.xml"
+$PredefinedSourceFolder = ""  # Ensure trailing backslash
+$PredefinedWatchFolder  = ""   # Leave empty to auto-set (default: same drive as source)
+$PredefinedBackupDrive  = ""   # Leave empty to auto-set (default: same drive as source)
 $videoExtensions = @(".mxf", ".mp4", ".mov", ".crm", ".avi")
 
+# Determine the latest AME version folder from the user's Documents folder.
+$ameUserDocsBase = Join-Path ([Environment]::GetFolderPath("MyDocuments")) "Adobe\Adobe Media Encoder"
+if (Test-Path $ameUserDocsBase) {
+    $AMEVersionFolders = Get-ChildItem -Path $ameUserDocsBase -Directory | Where-Object { $_.Name -match '^\d+(\.\d+)?$' }
+    if ($AMEVersionFolders.Count -gt 0) {
+        $latestAMEFolder = $AMEVersionFolders | Sort-Object { [version]$_.Name } -Descending | Select-Object -First 1
+        $watchFolderInfoPath = Join-Path $latestAMEFolder.FullName "Watch Folder Info.xml"
+        $logPath = Join-Path $latestAMEFolder.FullName "AMEEncodingErrorLog.txt"
+    }
+    else {
+        Write-Host "No version folders found in $ameUserDocsBase. Using default paths." -ForegroundColor Yellow
+        $watchFolderInfoPath = "C:\Users\$env:USERNAME\Documents\Adobe\Adobe Media Encoder\25.0\Watch Folder Info.xml"
+        $logPath = "C:\Users\$env:USERNAME\Documents\Adobe\Adobe Media Encoder\25.0\AMEEncodingErrorLog.txt"
+    }
+}
+else {
+    Write-Host "AME documents folder not found. Using default paths." -ForegroundColor Yellow
+    $watchFolderInfoPath = "C:\Users\$env:USERNAME\Documents\Adobe\Adobe Media Encoder\25.0\Watch Folder Info.xml"
+    $logPath = "C:\Users\$env:USERNAME\Documents\Adobe\Adobe Media Encoder\25.0\AMEEncodingErrorLog.txt"
+}
+
+# Create the log file if it doesn't exist (new installs may not have one).
+if (!(Test-Path $logPath)) {
+    New-Item -Path $logPath -ItemType File -Force | Out-Null
+}
 
 # ----- Helper Functions -----
 
@@ -65,6 +89,43 @@ function IsFileLocked {
     } catch {
         return $true
     }
+}
+
+# Reads the AME error log and returns $true if an error block that mentions the given watch file
+# has a timestamp later than the provided $Since value.
+function Test-AMEErrorLog {
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]$WatchFilePath,
+        [Parameter(Mandatory = $true)]
+        [datetime]$Since
+    )
+    if (-not (Test-Path $logPath)) {
+        return $false
+    }
+    $logContent = Get-Content $logPath -Raw
+    # Split the log into blocks using lines of dashes as a delimiter.
+    $blocks = $logContent -split "^-{5,}" 
+    foreach ($block in $blocks) {
+        if ($block -match [regex]::Escape($WatchFilePath)) {
+            # For each block that mentions our watch file, check for a timestamp.
+            $lines = $block -split "`n"
+            foreach ($line in $lines) {
+                if ($line -match '^(?<timestamp>\d{2}/\d{2}/\d{4} \d{2}:\d{2}:\d{2} (AM|PM))') {
+                    $tsStr = $Matches['timestamp']
+                    try {
+                        $entryTime = [datetime]::ParseExact($tsStr, "MM/dd/yyyy hh:mm:ss tt", $null)
+                    } catch {
+                        continue
+                    }
+                    if ($entryTime -ge $Since) {
+                        return $true
+                    }
+                }
+            }
+        }
+    }
+    return $false
 }
 
 # Moves a file with a retry loop. Before moving, it checks that the file is not locked
@@ -153,12 +214,14 @@ function Restart-AME {
     }
 }
 
-# Removes empty directories recursively (deepest directories first).
+# Removes empty directories recursively (deepest directories first) within a given path.
+# This function is used for cleaning up empty folders in the watch folder.
 function Remove-EmptyDirectories {
     param(
         [Parameter(Mandatory = $true)]
         [string]$Path
     )
+    if (-not (Test-Path $Path)) { return }
     $dirs = Get-ChildItem -Path $Path -Directory -Recurse -Force | Sort-Object { $_.FullName.Length } -Descending
     foreach ($dir in $dirs) {
         $items = Get-ChildItem -Path $dir.FullName -Force
@@ -173,25 +236,7 @@ function Remove-EmptyDirectories {
     }
 }
 
-# Removes empty subfolders from the source folder after move operations.
-function Remove-EmptySourceDirectories {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$SourcePath
-    )
-    $dirs = Get-ChildItem -Path $SourcePath -Directory -Recurse -Force | Sort-Object { $_.FullName.Length } -Descending
-    foreach ($dir in $dirs) {
-        $items = Get-ChildItem -Path $dir.FullName -Force
-        if ($items.Count -eq 0) {
-            try {
-                Remove-Item -Path $dir.FullName -Recurse -Force -ErrorAction Stop
-                Write-Host "Removed empty subfolder: $($dir.FullName)" -ForegroundColor Green
-            } catch {
-                Write-Host "Failed to remove folder: $($dir.FullName). Error: $_" -ForegroundColor Red
-            }
-        }
-    }
-}
+# Note: We are no longer using any cleanup function that deletes folders from the original source folder.
 
 # ------------------------------------------
 # 1. Source Files Setup and Pre-Check
@@ -225,7 +270,6 @@ if (Test-Path $sourceFilesPath) {
     $sourceFilesList | ConvertTo-Json | Out-File $sourceFilesPath
     Write-Host "Source files list generated and saved to '$sourceFilesPath'." -ForegroundColor Green
 }
-
 $sourceFileNames = $sourceFilesList | ForEach-Object { [System.IO.Path]::GetFileName($_.RelativePath) } | Sort-Object -Unique
 
 # ------------------------------------------
@@ -237,15 +281,27 @@ if (-not [string]::IsNullOrEmpty($PredefinedWatchFolder)) {
 } else {
     $watchFolder = $defaultWatchFolder
 }
+
+# Ensure the watch folder and its "output" subfolder exist.
+if (-not (Test-Path $watchFolder)) {
+    New-Item -Path $watchFolder -ItemType Directory -Force | Out-Null
+    Write-Host "Created watch folder: $watchFolder" -ForegroundColor Green
+}
 $watchFolderOutput = Join-Path $watchFolder "output"
+if (-not (Test-Path $watchFolderOutput)) {
+    New-Item -Path $watchFolderOutput -ItemType Directory -Force | Out-Null
+    Write-Host "Created watch folder output folder: $watchFolderOutput" -ForegroundColor Green
+}
+
+# Set watch folder source root (this is where source files are temporarily placed)
+$watchFolderSourceRoot = Join-Path $watchFolder "source"
 
 # Clean up any empty subfolders under the "source" area of the watch folder.
-$watchFolderSourceRoot = Join-Path $watchFolder "source"
 if (Test-Path $watchFolderSourceRoot) {
     Get-ChildItem -Path $watchFolderSourceRoot -Directory -Recurse -Force | ForEach-Object {
         if ((Get-ChildItem -Path $_.FullName -File -Recurse -Force -ErrorAction SilentlyContinue).Count -eq 0) {
             Remove-Item -Path $_.FullName -Recurse -Force -ErrorAction SilentlyContinue
-            Write-Host "Removed empty folder: $($_.FullName)" -ForegroundColor Green
+            Write-Host "Removed empty folder in watch source: $($_.FullName)" -ForegroundColor Green
         }
     }
 }
@@ -292,6 +348,8 @@ if (Test-Path $watchFolderInfoPath) {
     try {
         [xml]$xml = Get-Content $watchFolderInfoPath
         $newWatchFolder = $watchFolder  # Use the watch folder already determined
+
+        # Update the main WatchFolder node
         if ($xml.PremiereData.WatchFolder) {
             $xml.PremiereData.WatchFolder.WatchFolderName = $newWatchFolder
         }
@@ -303,26 +361,46 @@ if (Test-Path $watchFolderInfoPath) {
             $wfElem.AppendChild($nameElem) | Out-Null
             $root.AppendChild($wfElem) | Out-Null
         }
+
+        # Update the OutputFolderName node within the WatchFolderOutput node.
+        if ($xml.PremiereData.WatchFolderOutput) {
+            $xml.PremiereData.WatchFolderOutput.OutputFolderName = "$watchFolder\Output\"
+        }
+        else {
+            # Optionally create the WatchFolderOutput node if it doesn't exist.
+            $root = $xml.SelectSingleNode("PremiereData")
+            $wfoElem = $xml.CreateElement("WatchFolderOutput")
+            $outputElem = $xml.CreateElement("OutputFolderName")
+            $outputElem.InnerText = "$watchFolder\Output\"
+            $wfoElem.AppendChild($outputElem) | Out-Null
+            $root.AppendChild($wfoElem) | Out-Null
+        }
+
         $xml.Save($watchFolderInfoPath)
-        Write-Host "Updated Watch Folder Info.xml: Watch folder set to $newWatchFolder" -ForegroundColor Green
+        Write-Host "Updated Watch Folder Info.xml: Watch folder set to $newWatchFolder and output folder set to $watchFolder\Output\" -ForegroundColor Green
     }
     catch {
         Write-Host "Error updating Watch Folder Info.xml: $_" -ForegroundColor Red
     }
-} else {
+}
+else {
     Write-Host "Watch Folder Info XML file not found at $watchFolderInfoPath" -ForegroundColor Red
 }
 
 $driveLetter = $backupDrive.Substring(0,1)
 $driveInfo = Get-PSDrive -Name $driveLetter
-$sourceSize = (Get-ChildItem -Path $sourceFolder -Recurse -File | Measure-Object -Property Length -Sum).Sum
-if (-not $sourceSize) {
-    Write-Host "Could not determine source folder size. Check the source path." -ForegroundColor Red
+# Use the total source size for all files if needed:
+#$sourceSize = (Get-ChildItem -Path $sourceFolder -Recurse -File | Measure-Object -Property Length -Sum).Sum
+# For adaptive estimation, we consider only video files.
+$videoSourceFiles = Get-ChildItem -Path $sourceFolder -Recurse -File | Where-Object { $videoExtensions -contains $_.Extension.ToLower().Trim() }
+$TotalProjectSourceSize = ($videoSourceFiles | Measure-Object -Property Length -Sum).Sum
+if (-not $TotalProjectSourceSize) {
+    Write-Host "Could not determine total video source size. Check the source path." -ForegroundColor Red
     exit
 }
 $freeSpace = $driveInfo.Free
-$requiredSpace = [math]::Ceiling($sourceSize / 5)
-$sourceSizeReadable = Convert-BytesToReadableSize -bytes $sourceSize
+$requiredSpace = [math]::Ceiling(($TotalProjectSourceSize) / 5)
+$sourceSizeReadable = Convert-BytesToReadableSize -bytes $TotalProjectSourceSize
 $requiredSpaceReadable = Convert-BytesToReadableSize -bytes $requiredSpace
 $freeSpaceReadable = Convert-BytesToReadableSize -bytes $freeSpace
 if ($freeSpace -lt $requiredSpace) {
@@ -350,25 +428,60 @@ if ($missingFromJson.Count -gt 0) {
     Write-Host "WARNING: The following files are listed in the JSON but do NOT exist:" -ForegroundColor Yellow
     $missingFromJson | ForEach-Object { Write-Host $_ -ForegroundColor Yellow }
 }
+Write-Host "Pre-check complete." -ForegroundColor Green
 
-$missingFilesPre = @()
-$existingFilesPre = @()
-foreach ($sf in $allSourceFiles) {
-    $expectedTarget = Get-ExpectedTarget -File $sf -SourceFolder $sourceFolder -DestFolder $destFolder -VideoExtensions $videoExtensions
-    if (Test-Path $expectedTarget) {
-        $existingFilesPre += $sf.FullName
-    } else {
-        $missingFilesPre += $sf.FullName
+
+# ------------------------------------------
+# Adaptive Estimation Initialization
+# ------------------------------------------
+# Scan the backup destination for any already encoded video files (assumed to be .mp4).
+$preProcessedVideoFiles = Get-ChildItem -Path $destFolder -Recurse -File | Where-Object {
+    $_.Extension.ToLower().Trim() -eq ".mp4"
+}
+
+# Initialize cumulative totals based on pre-existing files.
+$CumulativeEncoded = 0
+$CumulativeSourceEncoded = 0
+
+foreach ($encFile in $preProcessedVideoFiles) {
+    # Try to find a matching source file entry.
+    $srcEntry = $sourceFilesList | Where-Object {
+        # Recreate the expected target path for the source file.
+        $expectedTarget = Get-ExpectedTarget -File (Get-Item (Join-Path $sourceFolder $_.RelativePath)) `
+                            -SourceFolder $sourceFolder -DestFolder $destFolder -VideoExtensions $videoExtensions
+        $expectedTarget -eq $encFile.FullName
+    } | Select-Object -First 1
+
+    if ($srcEntry) {
+        $srcFilePath = Join-Path $sourceFolder $srcEntry.RelativePath
+        if (Test-Path $srcFilePath) {
+            $srcSize = (Get-Item $srcFilePath).Length
+            $CumulativeSourceEncoded += $srcSize
+            $CumulativeEncoded += $encFile.Length
+        }
     }
 }
-Write-Host "Pre-check: Backup files already exist for $($existingFilesPre.Count) source files." -ForegroundColor Cyan
-Write-Host "Pre-check: Backup files are missing for $($missingFilesPre.Count) source files." -ForegroundColor Cyan
-if ($missingFilesPre.Count -eq 0) {
-    Write-Host "All source files have backup targets. Nothing to encode." -ForegroundColor Green
+
+if ($CumulativeSourceEncoded -gt 0) {
+    $adaptiveRatio = $CumulativeEncoded / $CumulativeSourceEncoded
 } else {
-    Write-Host "Processing only missing files..."
+    # Fallback default ratio (e.g., 0.1 for 10x reduction)
+    $adaptiveRatio = 0.1
 }
-Write-Host "-----------------------------------------"
+
+$expectedFinalEncodedSize = $TotalProjectSourceSize * $adaptiveRatio
+
+if ($expectedFinalEncodedSize -gt 0) {
+    $progressPercentage = [math]::Round(($CumulativeEncoded / $expectedFinalEncodedSize) * 100, 2)
+} else {
+    $progressPercentage = 0
+}
+
+Write-Progress -Activity "Encoding Progress" `
+    -Status ("Pre-existing: Encoded {0:N2} GB of estimated {1:N2} GB (Ratio: {2:N2})" -f ($CumulativeEncoded/1GB), ($expectedFinalEncodedSize/1GB), $adaptiveRatio) `
+    -PercentComplete $progressPercentage
+
+
 
 # ------------------------------------------
 # 5. Process Each Source File (Only Those Missing Backup) with Progress Reporting
@@ -395,31 +508,72 @@ foreach ($file in $filesToProcess) {
         $destDir = Split-Path $destFile -Parent
         if (!(Test-Path $destDir)) { New-Item -ItemType Directory -Path $destDir -Force | Out-Null }
 
-        $watchInputFile = Join-Path $watchFolder $file.Name
-        Write-Host "Moving video file to watch folder: $watchInputFile" -ForegroundColor Cyan
-        try {
-            Move-Item -Path $file.FullName -Destination $watchInputFile -Force -ErrorAction Stop
-        } catch {
-            Write-Host "Failed to move video file '$($file.FullName)' to watch folder. Continuing script execution." -ForegroundColor Red
-            continue
-        }
+        # Determine if source and watch folder are on the same drive.
+        $sourceDrive = [System.IO.Path]::GetPathRoot($sourceFolder).ToUpper()
+        $watchDrive  = [System.IO.Path]::GetPathRoot($watchFolder).ToUpper()
+        $sameDrive   = ($sourceDrive -eq $watchDrive)
 
-        Write-Host "Waiting for encoded output file matching: $expectedBase*.mp4" -ForegroundColor Cyan
-        $encodedFile = $null
-        $maxWait = 600  # maximum wait time in seconds
-        $waited = 0
-        while ($encodedFile -eq $null -and $waited -lt $maxWait) {
-            $encodedFile = Get-ChildItem -Path $watchFolderOutput -Recurse -File -ErrorAction SilentlyContinue |
-                Where-Object { $_.Name -like "$expectedBase*.mp4" } | Select-Object -First 1
-            if ($encodedFile -eq $null) {
-                Start-Sleep -Seconds 5
-                $waited += 5
+        $watchInputFile = Join-Path $watchFolder $file.Name
+        Write-Host "Sending video file to watch folder: $watchInputFile" -ForegroundColor Cyan
+
+        if ($sameDrive) {
+            # On the same drive: move the file
+            try {
+                Move-Item -Path $file.FullName -Destination $watchInputFile -Force -ErrorAction Stop
+            } catch {
+                Write-Host "Failed to move video file '$($file.FullName)' to watch folder. Continuing script execution." -ForegroundColor Red
+                continue
+            }
+        } else {
+            # On different drives: copy the file so the source remains intact.
+            try {
+                Copy-Item -Path $file.FullName -Destination $watchInputFile -Force -ErrorAction Stop
+            } catch {
+                Write-Host "Failed to copy video file '$($file.FullName)' to watch folder. Continuing script execution." -ForegroundColor Red
+                continue
             }
         }
+        
+        # Record the time immediately after sending the file.
+        $fileStartTime = Get-Date
+
+        Write-Host "Waiting for encoded output file matching: $expectedBase*.mp4" -ForegroundColor Cyan
+
+        # Infinite wait loop that waits for a candidate encoded file to appear and be stable,
+        # while also checking the AME error log for new errors (only considering those after $fileStartTime).
+        $encodedFile = $null
+        while ($true) {
+            $candidate = Get-ChildItem -Path $watchFolderOutput -Recurse -File -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -like "$expectedBase*.mp4" } | Select-Object -First 1
+            if ($candidate -ne $null) {
+                $initialSize = $candidate.Length
+                Start-Sleep -Seconds 5
+                if (Test-Path $candidate.FullName) {
+                    $currentSize = (Get-Item $candidate.FullName).Length
+                } else {
+                    $currentSize = 0
+                }
+                if ($initialSize -eq $currentSize -and $initialSize -gt 0) {
+                    Write-Host "Encoded file '$($candidate.FullName)' is stable (size: $currentSize bytes)." -ForegroundColor Green
+                    $encodedFile = $candidate
+                    break
+                } else {
+                    Write-Host "Encoded file '$($candidate.FullName)' is still growing (from $initialSize to $currentSize bytes). Waiting..." -ForegroundColor Yellow
+                }
+            }
+            # Check the AME error log for new errors for this file.
+            if (Test-AMEErrorLog -WatchFilePath $watchInputFile -Since $fileStartTime) {
+                Write-Host "Error detected in AME encoding for file '$watchInputFile'." -ForegroundColor Red
+                # Optionally, you might want to count failures or exit.
+                break
+            }
+            Start-Sleep -Seconds 5
+        }
+        
         if ($encodedFile -eq $null) {
-            Write-Host "Encoded file for '$($file.Name)' not found within timeout period. Skipping file." -ForegroundColor Red
             continue
         }
+        
         Write-Host "Encoded file found: $($encodedFile.FullName)" -ForegroundColor Green
 
         if (-not (Move-FileWithRetry -Source $encodedFile.FullName -Destination $destFile)) {
@@ -428,32 +582,61 @@ foreach ($file in $filesToProcess) {
 
         $originalInWatch = Get-ChildItem -Path $watchFolder -Recurse -File -Filter $file.Name -ErrorAction SilentlyContinue | Select-Object -First 1
         if ($originalInWatch -ne $null) {
-            $originalDest = Join-Path $sourceFolder $relativePath
-            $origDir = Split-Path $originalDest -Parent
-            if (!(Test-Path $origDir)) { New-Item -ItemType Directory -Path $origDir -Force | Out-Null }
-            if (-not (Move-FileWithRetry -Source $originalInWatch.FullName -Destination $originalDest)) {
-                Write-Host "Failed to restore original video file '$($originalInWatch.FullName)' to '$originalDest'." -ForegroundColor Red
+            if ($sameDrive) {
+                # When moved, restore the file back to source.
+                $originalDest = Join-Path $sourceFolder $relativePath
+                $origDir = Split-Path $originalDest -Parent
+                if (!(Test-Path $origDir)) { New-Item -ItemType Directory -Path $origDir -Force | Out-Null }
+                if (-not (Move-FileWithRetry -Source $originalInWatch.FullName -Destination $originalDest)) {
+                    Write-Host "Failed to restore original video file '$($originalInWatch.FullName)' to '$originalDest'." -ForegroundColor Red
+                }
+                else {
+                    Write-Host "Original video file returned to source location: $originalDest" -ForegroundColor Green
+
+                    # Now remove the empty subdirectory in the watch folder (watch_folder\source\subdir)
+                    $watchSubdir = Split-Path $originalInWatch.FullName -Parent
+                    if ($watchSubdir -like "$watchFolderSourceRoot*") {
+                        if ((Get-ChildItem -Path $watchSubdir -Force -Recurse -ErrorAction SilentlyContinue).Count -eq 0) {
+                            Remove-Item -Path $watchSubdir -Recurse -Force -ErrorAction SilentlyContinue
+                            Write-Host "Removed empty watch subdirectory: $watchSubdir" -ForegroundColor Green
+                        }
+                    }
+                }
             }
             else {
-                Write-Host "Original video file returned to source location: $originalDest" -ForegroundColor Green
+                # In copy mode, remove the copied file from the watch folder.
+                try {
+                    Remove-Item -Path $originalInWatch.FullName -Force -ErrorAction Stop
+                    Write-Host "Copied video file removed from watch folder." -ForegroundColor Green
+                } catch {
+                    Write-Host "Failed to remove copied video file '$($originalInWatch.FullName)' from watch folder." -ForegroundColor Red
+                }
             }
         }
-        else {
-            Write-Host "No original video file found in the watch folder to return." -ForegroundColor Yellow
-            $originalDest = $file.FullName
-        }
-
+        
+        # --- Adaptive Status Bar Update for Video Encoding ---
         try {
-            $originalFileItem = Get-Item $originalDest
+            # Retrieve the newly moved encoded file's size.
+            $encodedFileItem = Get-Item $destFile
+            # Update cumulative totals (using the original source file size and the encoded file size).
+            $CumulativeEncoded += $encodedFileItem.Length
+            $CumulativeSourceEncoded += $file.Length
+
+            if ($CumulativeSourceEncoded -gt 0) {
+                $adaptiveRatio = $CumulativeEncoded / $CumulativeSourceEncoded
+            } else {
+                $adaptiveRatio = 0.1
+            }
+            $expectedFinalEncodedSize = $TotalProjectSourceSize * $adaptiveRatio
+            if ($expectedFinalEncodedSize -gt 0) {
+                $progressPercentage = [math]::Round(($CumulativeEncoded / $expectedFinalEncodedSize) * 100, 2)
+            } else {
+                $progressPercentage = 0
+            }
+            Write-Progress -Activity "Encoding Progress" -Status ("Encoded {0:N2} GB of estimated {1:N2} GB (Adaptive Ratio: {2:N2})" -f ($CumulativeEncoded/1GB), ($expectedFinalEncodedSize/1GB), $adaptiveRatio) -PercentComplete $progressPercentage
+        } catch {
+            Write-Host "Error updating progress: $_" -ForegroundColor Red
         }
-        catch {
-            $originalFileItem = Get-Item $file.FullName
-        }
-        $encodedFileItem = Get-Item $destFile
-        $originalSizeReadable = Convert-BytesToReadableSize -bytes $originalFileItem.Length
-        $encodedSizeReadable = Convert-BytesToReadableSize -bytes $encodedFileItem.Length
-        Write-Host "File sizes for '$($file.Name)': Original = $originalSizeReadable, Encoded = $encodedSizeReadable" -ForegroundColor Cyan
-        Write-Host "------------------------------------------"
     }
     else {
         Write-Host "Active file (NON-VIDEO): $($file.FullName)" -ForegroundColor White
@@ -467,10 +650,11 @@ foreach ($file in $filesToProcess) {
 Write-Host "Backup process complete. Processed $processedCount files." -ForegroundColor Green
 
 # ------------------------------------------
-# 6. Cleanup: Remove Empty Folders from the Watch Folder and Source
+# 6. Cleanup: Remove Empty Folders from the Watch Folder
 # ------------------------------------------
 Remove-EmptyDirectories -Path $watchFolder
-Remove-EmptySourceDirectories -SourcePath $sourceFolder
+
+# Note: We removed any cleanup that touches the original source folder.
 
 # ------------------------------------------
 # 7. Final Integrity Check: Report Which Target Files Are Missing
