@@ -5,7 +5,7 @@
 
 **H265 Project Transcoder** is an automated PowerShell solution that streamlines the workflow for video backup, encoding, and file management. Designed to integrate seamlessly with Adobe Media Encoder (AME), this project handles the entire process from verifying source files to moving and encoding video files using the H.265 (HEVC) codec.
 
-If you have old video projects that take up a lot of space on your archive drive, you can achieve a 10x reduction in space while maintaining high visual quality if you ever need to access your raw files again.
+If you have old video projects that take up a lot of space on your archive drive, you can achieve a 10x reduction in space while maintaining high visual quality if you ever need to access your old video files again.
 
 ---
 
