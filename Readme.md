@@ -43,7 +43,7 @@ If you have old video projects that take up a lot of space on your archive drive
 ## Requirements
 
 - **Operating System:** Windows (with PowerShell 5.1 or later)
-- **Software:** Adobe Media Encoder (compatible version, e.g., 25.0)
+- **Software:** Adobe Media Encoder (compatible version, e.g., 25.0) and Mediainfo (install through choco with choco install mediainfo-cli)
 - **Directories:** Access to a defined source folder, watch folder, and backup drive
 
 ---
