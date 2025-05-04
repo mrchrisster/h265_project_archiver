@@ -10,6 +10,10 @@ Archives a video project by:
 
 Supports resuming interrupted transfers (skips existing good files, re-renders corrupted ones),
 and runs a post-render integrity check using PyAV (or FFmpeg CLI fallback).
+
+PREREQUISITS: There is a problem with creating timline from clip, it will create stereo channels that don't match source media.
+In order to have mono channels on every timeline, set DaVinci -> Preferences -> User -> Edit -> Mono Audio
+
 """
 import os
 import sys
@@ -37,6 +41,11 @@ PROJECT_NAME     = "Batch_H265"
 DRP_PATH         = r"C:\code\davinci_encoder\Batch_H265.drp"
 PRESET_XML_PATH  = r"C:\code\davinci_encoder\Batch_H265_RenderSettings.xml"
 PRESET_NAME      = Path(PRESET_XML_PATH).stem
+drx_file         = Path(r"C:\code\davinci_encoder\rawfix.drx")
+DRT_TEMPLATE_MONO   = r"C:\code\davinci_encoder\Template_Mono_1ch.drt"
+DRT_TEMPLATE_STEREO = r"C:\code\davinci_encoder\Template_Stereo_2ch.drt"
+
+    
 
 def is_resolve_running():
     try:
@@ -182,6 +191,25 @@ def is_readable(path: Path) -> bool:
     p = subprocess.run(['ffmpeg','-v','error','-i',str(path),'-f','null','-'],
                        stderr=subprocess.PIPE, stdout=subprocess.DEVNULL)
     return p.returncode == 0
+    
+def get_audio_info(clip):
+    """Returns (channels, layout) tuple from Resolve metadata, with fallback support."""
+    for _ in range(20):  # Wait up to 5s for Resolve to extract metadata
+        props = clip.GetClipProperty()
+        ch = props.get("Audio Channels") or props.get("Audio Ch")
+        if ch not in [None, "", "0"]:
+            break
+        time.sleep(0.25)
+
+    props = clip.GetClipProperty()
+    channels_raw = props.get("Audio Channels") or props.get("Audio Ch")
+    try:
+        channels = int(channels_raw)
+    except:
+        channels = -1
+    layout = (props.get("Audio Track Type") or "").lower()
+    return channels, layout
+
 
 
 def transcode_with_resolve(resolve_bundle, clip_path: Path, src_root: Path, archive_root: Path) -> bool:
@@ -196,7 +224,6 @@ def transcode_with_resolve(resolve_bundle, clip_path: Path, src_root: Path, arch
     out_folder.mkdir(parents=True, exist_ok=True)
     out_file = out_folder / f"{base}.mp4"
 
-    # Resume or re-render if corrupted
     if out_file.exists() and is_readable(out_file):
         print(f"✅ Skipping (exists & OK): {rel}")
         return True
@@ -204,7 +231,7 @@ def transcode_with_resolve(resolve_bundle, clip_path: Path, src_root: Path, arch
         print(f"⚠️ Corrupt, deleting: {rel}")
         out_file.unlink()
 
-    # Clean previous jobs, timelines, clips
+    # Clean Resolve project state
     mp      = project.GetMediaPool()
     storage = resolve.GetMediaStorage()
     project.DeleteAllRenderJobs()
@@ -217,7 +244,7 @@ def transcode_with_resolve(resolve_bundle, clip_path: Path, src_root: Path, arch
         mp.DeleteClips(clips)
     print("🧹 Resolve cleaned.")
 
-    # Import clip & create timeline
+    # Import source clip
     print(f"📥 Importing: {clip_path}")
     items = storage.AddItemListToMediaPool([str(clip_path)])
     time.sleep(2)
@@ -226,34 +253,82 @@ def transcode_with_resolve(resolve_bundle, clip_path: Path, src_root: Path, arch
         return False
     clip = items[0]
 
+    # Get resolution and FPS
     props   = clip.GetClipProperty()
     w, h    = map(int, props['Resolution'].split('x'))
     raw_fps = props.get('FPS') or props.get('Frame rate')
     fps     = f"{float(raw_fps):.6f}".rstrip('0').rstrip('.')
 
-    project.SetSetting("timelineUseCustomSettings","1")
-    project.SetSetting("timelineResolutionWidth",  str(w))
+    # Apply timeline settings
+    project.SetSetting("timelineUseCustomSettings", "1")
+    project.SetSetting("timelineResolutionWidth", str(w))
     project.SetSetting("timelineResolutionHeight", str(h))
-    project.SetSetting("timelineFrameRate",          fps)
+    project.SetSetting("timelineFrameRate", fps)
     project.SetSetting("timelinePlaybackFrameRate", fps)
 
-    tl_name = f"TL_{base}"
-    for i in range(1, project.GetTimelineCount()+1):
-        t = project.GetTimelineByIndex(i)
-        if t and t.GetName()==tl_name:
-            mp.DeleteTimelines([t])
-            break
-    mp.CreateEmptyTimeline(tl_name)
-    mp.AppendToTimeline([clip])
+    # Select timeline template based on audio
+    channels, layout = get_audio_info(clip)
+    use_stereo = channels == 2 and "stereo" in layout
 
-    # Re-load the XML preset for this render
+
+    drt_path = DRT_TEMPLATE_STEREO if use_stereo else DRT_TEMPLATE_MONO
+    print(f"🎧 Detected {channels}ch {'(stereo)' if use_stereo else f'({layout})'}; using {'stereo' if use_stereo else 'mono'} template")
+    
+    # Import correct template timeline
+    tl_name = f"TL_{base}"
+    timeline = mp.ImportTimelineFromFile(drt_path, {
+        "timelineName": tl_name,
+        "importSourceClips": False
+    })
+    if not timeline:
+        print(f"❌ Failed to import template: {drt_path}")
+        return False
+
+
+    # Append actual clip
+    if not mp.AppendToTimeline([clip]):
+        print("❌ Failed to append actual media to timeline.")
+        return False
+    # Clean up unused default tracks after appending
+    used_video_tracks = set()
+    used_audio_tracks = set()
+
+    # Scan used tracks from timeline items
+    for track_type in ['video', 'audio']:
+        count = timeline.GetTrackCount(track_type)
+        for i in range(1, count + 1):
+            items = timeline.GetItemListInTrack(track_type, i)
+            if items:
+                if track_type == 'video':
+                    used_video_tracks.add(i)
+                else:
+                    used_audio_tracks.add(i)
+
+    # Delete unused tracks from highest to lowest to prevent index shifts
+    for track_type, used in [('video', used_video_tracks), ('audio', used_audio_tracks)]:
+        count = timeline.GetTrackCount(track_type)
+        for i in reversed(range(1, count + 1)):
+            if i not in used:
+                timeline.DeleteTrack(track_type, i)
+                print(f"🗑️ Deleted empty {track_type} track {i}")
+
+    # Reload preset and override output path
     project.LoadRenderPreset(PRESET_NAME)
-    # Override only output folder & filename
     project.SetRenderSettings({
-        'TargetDir':  str(out_folder),
+        'TargetDir': str(out_folder),
         'CustomName': base,
     })
 
+    # Optional: Apply DRX grade
+    if drx_file.exists():
+        resolve.OpenPage("color")
+        time.sleep(1)
+        for vc in project.GetCurrentTimeline().GetItemListInTrack('video', 1) or []:
+            fn = getattr(vc.GetNodeGraph(), 'ApplyGradeFromDRX', None)
+            if callable(fn) and fn(str(drx_file), 0):
+                print(f"✅ Applied grade to {vc.GetName()}")
+
+    # Start render
     job_id = project.AddRenderJob()
     if not job_id:
         print(f"❌ Failed to queue render for {base}")
@@ -264,12 +339,13 @@ def transcode_with_resolve(resolve_bundle, clip_path: Path, src_root: Path, arch
         time.sleep(1)
     print(f"🏁 Completed render: {rel}")
 
-    # Check integrity
+    # Verify integrity
     if is_readable(out_file):
         print(f"✅ Integrity OK: {rel}")
         return True
     print(f"⚠️ Integrity still failed: {rel}")
     return False
+
 
 # —————————————————————————————————————————————————————————
 #           M A I N
@@ -300,8 +376,6 @@ if __name__ == '__main__':
     archive_root    = dst / f"{src.name}-265"
     archive_root.mkdir(parents=True, exist_ok=True)
 
-    print(f"Found {len(non_media_all)} assets; {len(media)} media files (skipping proxies)")
-    input("Press Enter to begin…")
 
     # Copy assets
     for f in non_media_all:
