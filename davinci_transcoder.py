@@ -11,19 +11,19 @@ Archives a video project by:
 Supports resuming interrupted transfers (skips existing good files, re-renders corrupted ones),
 and runs a post-render integrity check using PyAV (or FFmpeg CLI fallback).
 
-PREREQUISITS: There is a problem with creating timline from clip, it will create stereo channels that don't match source media.
-In order to have mono channels on every timeline, set DaVinci -> Preferences -> User -> Edit -> Mono Audio
-
+PREREQUISITES: To force mono audio tracks on timeline creation,
+set DaVinci → Preferences → User → Edit → Audio → Timeline Audio Tracks → Mono
 """
+
 import os
 import sys
 import shutil
 import argparse
-import time
 import subprocess
+import time
 from pathlib import Path
 
-# Integrity check: try PyAV, else FFmpeg CLI
+# Optional: PyAV integrity check
 try:
     import av
     HAVE_PYAV = True
@@ -31,39 +31,29 @@ except ImportError:
     HAVE_PYAV = False
     print("⚠️ PyAV not installed; using FFmpeg CLI for integrity checks.")
 
-# —————————————————————————————————————————————————————————
-# ——  RESOLVE LAUNCH + SCRIPTS API SETUP  ——
-RESOLVE_PY_MODULE = r"C:\ProgramData\Blackmagic Design\DaVinci Resolve\Support\Developer\Scripting\Modules"
-RESOLVE_DLL_PATH  = r"C:\Program Files\Blackmagic Design\DaVinci Resolve"
-RESOLVE_EXE_PATH  = r"C:\Program Files\Blackmagic Design\DaVinci Resolve\Resolve.exe"
+# —— Resolve paths ——
+RESOLVE_PY_MODULE       = r"C:\ProgramData\Blackmagic Design\DaVinci Resolve\Support\Developer\Scripting\Modules"
+RESOLVE_DLL_PATH        = r"C:\Program Files\Blackmagic Design\DaVinci Resolve"
+RESOLVE_EXE_PATH        = r"C:\Program Files\Blackmagic Design\DaVinci Resolve\Resolve.exe"
 
-PROJECT_NAME     = "Batch_H265"
-DRP_PATH         = r"C:\code\davinci_encoder\Batch_H265.drp"
-PRESET_XML_PATH  = r"C:\code\davinci_encoder\Batch_H265_RenderSettings.xml"
-PRESET_NAME      = Path(PRESET_XML_PATH).stem
-drx_file         = Path(r"C:\code\davinci_encoder\rawfix.drx")
-DRT_TEMPLATE_MONO   = r"C:\code\davinci_encoder\Template_Mono_1ch.drt"
-DRT_TEMPLATE_STEREO = r"C:\code\davinci_encoder\Template_Stereo_2ch.drt"
+PROJECT_NAME            = "Batch_H265"
+DRP_PATH                = r"C:\code\davinci_encoder\Batch_H265.drp"
+PRESET_XML_PATH         = r"C:\code\davinci_encoder\Batch_H265_RenderSettings.xml"
+PRESET_NAME             = Path(PRESET_XML_PATH).stem
+drx_file                = Path(r"C:\code\davinci_encoder\rawfix.drx")
+DRT_TEMPLATE_MONO       = r"C:\code\davinci_encoder\Template_Mono_1ch.drt"
+DRT_TEMPLATE_STEREO     = r"C:\code\davinci_encoder\Template_Stereo_2ch.drt"
 
-    
 
 def is_resolve_running():
     try:
-        out = subprocess.check_output(
-            ['tasklist', '/FI', 'IMAGENAME eq Resolve.exe'], text=True
-        )
+        out = subprocess.check_output(['tasklist', '/FI', 'IMAGENAME eq Resolve.exe'], text=True)
         return 'Resolve.exe' in out
     except Exception:
         return False
 
 
 def init_resolve():
-    """
-    Launch Resolve if needed, wait for scripting API, import/load .drp,
-    switch to Deliver page, clear old preset, import and load XML preset.
-    Returns (resolve, pm, project) or None.
-    """
-    # 1) Launch if needed
     if not is_resolve_running():
         print("🔄 Resolve not running; launching...")
         if not os.path.isfile(RESOLVE_EXE_PATH):
@@ -73,12 +63,10 @@ def init_resolve():
     else:
         print("ℹ️ Resolve already running.")
 
-    # 2) Add scripting API paths
     sys.path.insert(0, RESOLVE_PY_MODULE)
     os.add_dll_directory(RESOLVE_DLL_PATH)
     import DaVinciResolveScript as dvr
 
-    # 3) Wait for scripting API
     print("⏳ Waiting for Resolve scripting API...", end="", flush=True)
     resolve = None
     for _ in range(30):
@@ -93,10 +81,8 @@ def init_resolve():
         return None
     print("✅ Connected to Resolve.")
 
-    # 4) Import or load project (.drp)
-    pm       = resolve.GetProjectManager()
-    projects = pm.GetProjectListInCurrentFolder() or []
-    if PROJECT_NAME not in projects:
+    pm = resolve.GetProjectManager()
+    if PROJECT_NAME not in (pm.GetProjectListInCurrentFolder() or []):
         print(f"📦 Importing .drp as '{PROJECT_NAME}' from: {DRP_PATH}")
         if not os.path.isfile(DRP_PATH) or not pm.ImportProject(DRP_PATH, PROJECT_NAME):
             print(f"❌ Failed to import .drp at {DRP_PATH}")
@@ -104,43 +90,31 @@ def init_resolve():
     else:
         print(f"ℹ️ Project '{PROJECT_NAME}' already exists.")
 
-    # 5) Load project
     if not pm.LoadProject(PROJECT_NAME):
         print(f"❌ Failed to load project '{PROJECT_NAME}'")
         return None
+
     project = pm.GetCurrentProject()
     print(f"✅ Using project: '{project.GetName()}'")
-
-    # 6) Switch to Deliver page
     resolve.OpenPage("deliver")
     time.sleep(1)
 
-    # 7) Delete existing preset of same name
     for p in project.GetRenderPresetList() or []:
         if p == PRESET_NAME:
             project.DeleteRenderPreset(PRESET_NAME)
             print(f"🗑️ Deleted existing preset '{PRESET_NAME}'")
             break
 
-    # 8) Import XML preset
     if not os.path.isfile(PRESET_XML_PATH):
         print(f"❌ Preset XML not found: {PRESET_XML_PATH}")
         return None
-    ok = resolve.ImportRenderPreset(PRESET_XML_PATH)
-    print(f"ImportRenderPreset returned: {ok}")
-    if not ok:
+    if not resolve.ImportRenderPreset(PRESET_XML_PATH):
         print("⚠️ XML preset import may have failed.")
-
-    # 9) Load the preset into current render settings
-    if project.LoadRenderPreset(PRESET_NAME):
-        print(f"✅ Loaded render preset '{PRESET_NAME}'")
     else:
-        print(f"❌ Failed to load render preset '{PRESET_NAME}'")
+        print(f"✅ Loaded render preset '{PRESET_NAME}'")
 
     return resolve, pm, project
 
-# —————————————————————————————————————————————————————————
-# Utility functions
 
 def select_folder_dialog(prompt: str) -> Path:
     try:
@@ -191,10 +165,10 @@ def is_readable(path: Path) -> bool:
     p = subprocess.run(['ffmpeg','-v','error','-i',str(path),'-f','null','-'],
                        stderr=subprocess.PIPE, stdout=subprocess.DEVNULL)
     return p.returncode == 0
-    
+
+
 def get_audio_info(clip):
-    """Returns (channels, layout) tuple from Resolve metadata, with fallback support."""
-    for _ in range(20):  # Wait up to 5s for Resolve to extract metadata
+    for _ in range(20):
         props = clip.GetClipProperty()
         ch = props.get("Audio Channels") or props.get("Audio Ch")
         if ch not in [None, "", "0"]:
@@ -202,23 +176,19 @@ def get_audio_info(clip):
         time.sleep(0.25)
 
     props = clip.GetClipProperty()
-    channels_raw = props.get("Audio Channels") or props.get("Audio Ch")
+    raw = props.get("Audio Channels") or props.get("Audio Ch")
     try:
-        channels = int(channels_raw)
+        channels = int(raw)
     except:
         channels = -1
     layout = (props.get("Audio Track Type") or "").lower()
     return channels, layout
 
 
-
 def transcode_with_resolve(resolve_bundle, clip_path: Path, src_root: Path, archive_root: Path) -> bool:
     resolve, pm, project = resolve_bundle
     base = clip_path.stem
-    try:
-        rel = clip_path.relative_to(src_root)
-    except ValueError:
-        rel = Path(base)
+    rel = clip_path.relative_to(src_root) if src_root in clip_path.parents else Path(base)
 
     out_folder = archive_root / rel.parent
     out_folder.mkdir(parents=True, exist_ok=True)
@@ -231,20 +201,16 @@ def transcode_with_resolve(resolve_bundle, clip_path: Path, src_root: Path, arch
         print(f"⚠️ Corrupt, deleting: {rel}")
         out_file.unlink()
 
-    # Clean Resolve project state
-    mp      = project.GetMediaPool()
+    mp = project.GetMediaPool()
     storage = resolve.GetMediaStorage()
     project.DeleteAllRenderJobs()
     for i in range(1, project.GetTimelineCount()+1):
         tl = project.GetTimelineByIndex(i)
-        if tl:
-            mp.DeleteTimelines([tl])
+        if tl: mp.DeleteTimelines([tl])
     clips = mp.GetRootFolder().GetClipList() or []
-    if clips:
-        mp.DeleteClips(clips)
+    if clips: mp.DeleteClips(clips)
     print("🧹 Resolve cleaned.")
 
-    # Import source clip
     print(f"📥 Importing: {clip_path}")
     items = storage.AddItemListToMediaPool([str(clip_path)])
     time.sleep(2)
@@ -253,28 +219,21 @@ def transcode_with_resolve(resolve_bundle, clip_path: Path, src_root: Path, arch
         return False
     clip = items[0]
 
-    # Get resolution and FPS
-    props   = clip.GetClipProperty()
-    w, h    = map(int, props['Resolution'].split('x'))
-    raw_fps = props.get('FPS') or props.get('Frame rate')
-    fps     = f"{float(raw_fps):.6f}".rstrip('0').rstrip('.')
+    channels, layout = get_audio_info(clip)
+    props = clip.GetClipProperty()
+    w, h = map(int, props['Resolution'].split('x'))
+    fps = f"{float(props.get('FPS') or props.get('Frame rate')):.6f}".rstrip('0').rstrip('.')
 
-    # Apply timeline settings
     project.SetSetting("timelineUseCustomSettings", "1")
     project.SetSetting("timelineResolutionWidth", str(w))
     project.SetSetting("timelineResolutionHeight", str(h))
     project.SetSetting("timelineFrameRate", fps)
     project.SetSetting("timelinePlaybackFrameRate", fps)
 
-    # Select timeline template based on audio
-    channels, layout = get_audio_info(clip)
     use_stereo = channels == 2 and "stereo" in layout
-
-
     drt_path = DRT_TEMPLATE_STEREO if use_stereo else DRT_TEMPLATE_MONO
     print(f"🎧 Detected {channels}ch {'(stereo)' if use_stereo else f'({layout})'}; using {'stereo' if use_stereo else 'mono'} template")
-    
-    # Import correct template timeline
+
     tl_name = f"TL_{base}"
     timeline = mp.ImportTimelineFromFile(drt_path, {
         "timelineName": tl_name,
@@ -284,42 +243,28 @@ def transcode_with_resolve(resolve_bundle, clip_path: Path, src_root: Path, arch
         print(f"❌ Failed to import template: {drt_path}")
         return False
 
-
-    # Append actual clip
     if not mp.AppendToTimeline([clip]):
         print("❌ Failed to append actual media to timeline.")
         return False
-    # Clean up unused default tracks after appending
-    used_video_tracks = set()
-    used_audio_tracks = set()
 
-    # Scan used tracks from timeline items
+    used_tracks = {'video': set(), 'audio': set()}
     for track_type in ['video', 'audio']:
-        count = timeline.GetTrackCount(track_type)
-        for i in range(1, count + 1):
-            items = timeline.GetItemListInTrack(track_type, i)
-            if items:
-                if track_type == 'video':
-                    used_video_tracks.add(i)
-                else:
-                    used_audio_tracks.add(i)
+        for i in range(1, timeline.GetTrackCount(track_type) + 1):
+            if timeline.GetItemListInTrack(track_type, i):
+                used_tracks[track_type].add(i)
 
-    # Delete unused tracks from highest to lowest to prevent index shifts
-    for track_type, used in [('video', used_video_tracks), ('audio', used_audio_tracks)]:
-        count = timeline.GetTrackCount(track_type)
-        for i in reversed(range(1, count + 1)):
-            if i not in used:
+    for track_type in ['video', 'audio']:
+        for i in reversed(range(1, timeline.GetTrackCount(track_type) + 1)):
+            if i not in used_tracks[track_type]:
                 timeline.DeleteTrack(track_type, i)
                 print(f"🗑️ Deleted empty {track_type} track {i}")
 
-    # Reload preset and override output path
     project.LoadRenderPreset(PRESET_NAME)
     project.SetRenderSettings({
         'TargetDir': str(out_folder),
         'CustomName': base,
     })
 
-    # Optional: Apply DRX grade
     if drx_file.exists():
         resolve.OpenPage("color")
         time.sleep(1)
@@ -328,7 +273,6 @@ def transcode_with_resolve(resolve_bundle, clip_path: Path, src_root: Path, arch
             if callable(fn) and fn(str(drx_file), 0):
                 print(f"✅ Applied grade to {vc.GetName()}")
 
-    # Start render
     job_id = project.AddRenderJob()
     if not job_id:
         print(f"❌ Failed to queue render for {base}")
@@ -339,7 +283,6 @@ def transcode_with_resolve(resolve_bundle, clip_path: Path, src_root: Path, arch
         time.sleep(1)
     print(f"🏁 Completed render: {rel}")
 
-    # Verify integrity
     if is_readable(out_file):
         print(f"✅ Integrity OK: {rel}")
         return True
@@ -347,37 +290,26 @@ def transcode_with_resolve(resolve_bundle, clip_path: Path, src_root: Path, arch
     return False
 
 
-# —————————————————————————————————————————————————————————
-#           M A I N
-# —————————————————————————————————————————————————————————
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Archive & transcode via Resolve")
-    parser.add_argument('-s','--source',   help="Project root folder")
-    parser.add_argument('-d','--dest',     help="Destination root folder")
-    parser.add_argument('-v','--video-exts', nargs='*',
-                        default=['.mxf','.mp4','.mov','.crm','.avi'],
-                        help="Video extensions to transcode")
-    parser.add_argument('-r','--raw-exts',   nargs='*',
-                        default=['.arw','.cr2','.cr3','.nef','.dng','.raf','.orf','.rw2','.sr2'],
-                        help="Raw formats to transcode")
+    parser.add_argument('-s', '--source', help="Project root folder")
+    parser.add_argument('-d', '--dest', help="Destination root folder")
+    parser.add_argument('-v', '--video-exts', nargs='*',
+                        default=['.mxf', '.mp4', '.mov', '.crm', '.avi'])
+    parser.add_argument('-r', '--raw-exts', nargs='*',
+                        default=['.arw', '.cr2', '.cr3', '.nef', '.dng', '.raf', '.orf', '.rw2', '.sr2'])
     args = parser.parse_args()
 
     src = Path(args.source) if args.source else select_folder_dialog("Select project root")
-    dst = Path(args.dest)   if args.dest   else select_folder_dialog("Select destination root")
+    dst = Path(args.dest) if args.dest else select_folder_dialog("Select destination root")
     src, dst = src.resolve(), dst.resolve()
 
     non_media_all, media_all = gather_files(src, args.video_exts, args.raw_exts)
-    # skip proxies
-    media = [m for m in media_all
-             if 'proxy' not in (p.lower() for p in m.parts)
-             and not m.stem.lower().endswith('_proxy')]
-
-    media_basenames = {m.stem for m in media_all}
-    archive_root    = dst / f"{src.name}-265"
+    media = [m for m in media_all if 'proxy' not in (p.lower() for p in m.parts) and not m.stem.lower().endswith('_proxy')]
+    archive_root = dst / f"{src.name}-265"
     archive_root.mkdir(parents=True, exist_ok=True)
 
-
-    # Copy assets
+    media_basenames = {m.stem for m in media_all}
     for f in non_media_all:
         rel = f.relative_to(src)
         if f.stem in media_basenames:
@@ -385,18 +317,16 @@ if __name__ == '__main__':
             continue
         outp = archive_root / rel
         outp.parent.mkdir(parents=True, exist_ok=True)
-        if outp.exists() and outp.stat().st_size==f.stat().st_size:
+        if outp.exists() and outp.stat().st_size == f.stat().st_size:
             print(f"⏭️ Skipping (exists): {rel}")
             continue
         shutil.copy2(f, outp)
         print(f"📋 Copied asset: {rel}")
 
-    # Launch Resolve & init project + preset
     resolve_bundle = init_resolve()
     if not resolve_bundle:
         sys.exit(1)
 
-    # Transcode via Resolve
     for m in media:
         if not transcode_with_resolve(resolve_bundle, m, src, archive_root):
             print(f"⚠️ Failed to transcode: {m.relative_to(src)}")
