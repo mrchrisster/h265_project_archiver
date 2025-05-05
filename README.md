@@ -60,19 +60,21 @@ If you have large, long-term video project archives, this tool can cut file size
 
 
 #### Input folder:
-
+```
 MyVideoProject/
 ├── A001_C001.mov
 ├── A001_C001_proxy.mov    ← skipped
 ├── Graphics/
 │   └── logo.png
+```
 
 #### Output folder:
+```
 MyVideoProject-265/
 ├── A001_C001.mp4          ← transcoded
 ├── Graphics/
 │   └── logo.png           ← copied
-
+```
 
 ## ⚙️ Usage
 
