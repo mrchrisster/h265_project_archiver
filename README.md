@@ -1,41 +1,94 @@
-
 # H265 Project Transcoder
 
-**H265 Project Transcoder** is an automated python based solution that streamlines the workflow for video backup, encoding, and file management. Designed to integrate seamlessly with Davinci Resolve Studio, this project handles the entire process from verifying source files to moving and encoding video files using the H.265 (HEVC) codec.
+> A DaVinci Resolve-integrated Python tool to archive, compress, and preserve video projects at 10× smaller size — without compromising quality.
 
-If you have old video projects that take up a lot of space on your archive drive, you can achieve a 10x reduction in space while maintaining high visual quality if you ever need to access your old video files again.
-
----
-
-## Key Features
-
-- **Source Files Pre-Check & Tracking:**  
-  - Excludes files with base names ending in `_proxy` to avoid processing proxy files.
-
-- **Automated Video Encoding & Backup:**  
-  - Supports multiple video file formats (e.g., `.mxf`, `.mp4`, `.mov`, `.crm`, `.avi`).
-  - For video files, changes the extension to `.mp4` post-encoding and organizes them into a backup destination.
-  - Performs a free space check on the backup drive before processing to ensure sufficient storage.
+![Python](https://img.shields.io/badge/python-3.9-blue)
+![Platform](https://img.shields.io/badge/platform-Windows-lightgrey)
+![License](https://img.shields.io/badge/license-MIT-green)
 
 ---
 
-## Requirements
+## 🎯 Overview
 
-- **Operating System:** Windows (with python 3.9 and pyav installed)
-- **Software:** Davinci Resolve Studio
-- **Directories:** Access to a defined source folder, watch folder, and backup drive
+**H265 Project Transcoder** is a fully automated, Python-based solution designed to streamline your video archiving workflow. It integrates with **DaVinci Resolve Studio** to handle everything from video detection and grading to encoding and backup using the H.265 (HEVC) codec with GPU acceleration.
 
----
-
+If you have large, long-term video project archives, this tool can cut file sizes by up to **10×** while preserving folder structures and high visual quality — ideal for efficient backups and future access.
 
 ---
 
-## Usage
+## 🧩 Key Features
 
-1. **Configure Defaults:**  
-   Edit the user-defined defaults at the top of the script (source folder, watch folder, backup drive) to match your environment.
-   
+- 🔍 **Pre-processing & Smart Skipping**
+  - Skips `_proxy` files automatically
+  - Checks if output already exists and passes integrity check (via PyAV or FFmpeg)
 
-3. **Run the Script:**  
-   ```
-   .\python3.9 archive_and_transcode.py
+- 🎬 **Timeline Automation in Resolve**
+  - Auto-imports matching mono or stereo timeline templates
+  - Applies original clip resolution and frame rate
+  - Uses `.drx` grading (optional) for RAW or LOG source media
+
+- 💾 **Space-Saving Backup Workflow**
+  - Transcodes to `.mp4` using H.265 NVIDIA NVENC
+  - Preserves folder structure for easy reference
+
+- 🧠 **Smart Fallbacks**
+  - Falls back to FFmpeg CLI if PyAV is not available
+  - Automatically launches Resolve and loads a `.drp` project and `.xml` render preset
+
+---
+
+## ✅ Requirements
+
+| Component               | Requirement                                         |
+|------------------------|-----------------------------------------------------|
+| OS                     | Windows 10/11                                       |
+| Python Version         | Python 3.9+                                         |
+| Python Packages        | `pyav` (optional, recommended for integrity checks) |
+| Video Editor           | DaVinci Resolve **Studio** (not free version)       |
+| GPU                    | NVIDIA with NVENC support                           |
+
+---
+
+## 📦 Supported Formats
+
+- Video: `.mxf`, `.mp4`, `.mov`, `.crm`, `.avi`
+- Raw stills (optional): `.arw`, `.cr2`, `.cr3`, `.nef`, `.dng`, `.orf`, `.rw2`, `.sr2`
+
+---
+
+## 📁 Input/Output Example
+
+
+#### Input folder:
+
+```txt
+MyVideoProject/
+├── A001_C001.mov
+├── A001_C001_proxy.mov    ← skipped
+├── Graphics/
+│   └── logo.png
+
+#### Output folder:
+MyVideoProject-265/
+├── A001_C001.mp4          ← transcoded
+├── Graphics/
+│   └── logo.png           ← copied
+
+
+
+## ⚙️ Usage
+
+1. **Clone or download** this repository.
+2. **Update the paths** at the top of `archive_and_transcode.py`:
+   - Path to your `.drp` project template
+   - Path to your `.drt` mono/stereo timeline templates
+   - Path to your `.xml` render preset
+   - (Optional) Path to a `.drx` grade file
+3. Run:
+
+```bash
+python archive_and_transcode.py
+
+
+
+
