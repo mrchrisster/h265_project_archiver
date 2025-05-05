@@ -55,9 +55,19 @@ elif IS_WIN:
     DRT_TEMPLATE_STEREO = r"C:\code\davinci_encoder\Template_Stereo_2ch.drt"
 else:
     sys.exit("❌ Unsupported OS")
+    
 
 PROJECT_NAME = "Batch_H265"
 PRESET_NAME = Path(PRESET_XML_PATH).stem
+
+# Directories (by name) to skip entirely
+EXCLUDE_DIRS = ["Exports", "Proxies"]
+
+# File‑name patterns to skip entirely (case‑insensitive)
+# e.g. "_proxy" will skip foo_proxy.mov or anything with “proxy” in its stem
+EXCLUDE_FILE_PATTERNS = ["_proxy"]
+
+
 
 def init_resolve():
     """
@@ -155,16 +165,31 @@ def format_size(n_bytes: int) -> str:
 
 
 def gather_files(src: Path, video_exts, raw_exts):
+    """
+    Walk src, returning (non_media, media), but skipping:
+      • any directory in EXCLUDE_DIRS
+      • any file whose name matches one of EXCLUDE_FILE_PATTERNS
+    """
     vset = {e.lower() for e in video_exts}
     rset = {e.lower() for e in raw_exts}
     non_media, media = [], []
-    for root, _, files in os.walk(src):
+
+    for root, dirs, files in os.walk(src):
+        # 1) prune out unwanted directories
+        dirs[:] = [d for d in dirs if d not in EXCLUDE_DIRS]
+
         for f in files:
+            # 2) skip unwanted filenames
+            lname = f.lower()
+            if any(pat in lname for pat in EXCLUDE_FILE_PATTERNS):
+                continue
+
             p = Path(root) / f
             if p.suffix.lower() in vset or p.suffix.lower() in rset:
                 media.append(p)
             else:
                 non_media.append(p)
+
     return non_media, media
 
 
