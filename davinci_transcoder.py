@@ -50,7 +50,7 @@ elif IS_WIN:
     RESOLVE_EXE_PATH  = r"C:\Program Files\Blackmagic Design\DaVinci Resolve\Resolve.exe"
     DRP_PATH          = r"C:\code\davinci_encoder\Batch_H265.drp"
     PRESET_XML_PATH   = r"C:\code\davinci_encoder\Batch_H265_RenderSettings.xml"
-    drx_file          = Path(r"C:\code\davinci_encoder\rawfix.drx")
+    drx_file          = r"C:\code\davinci_encoder\rawfix.drx"
     DRT_TEMPLATE_MONO = r"C:\code\davinci_encoder\Template_Mono_1ch.drt"
     DRT_TEMPLATE_STEREO = r"C:\code\davinci_encoder\Template_Stereo_2ch.drt"
 else:
@@ -294,7 +294,7 @@ def transcode_with_resolve(resolve_bundle, clip_path: Path, src_root: Path, arch
         'CustomName': base,
     })
 
-    if drx_file.exists():
+    if os.path.exists(drx_file):
         resolve.OpenPage("color")
         time.sleep(1)
         for vc in project.GetCurrentTimeline().GetItemListInTrack('video', 1) or []:
