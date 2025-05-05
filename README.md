@@ -49,6 +49,15 @@ If you have large, long-term video project archives, this tool can cut file size
 
 ---
 
+## 📦 Installation
+
+#### MAC OS X
+```
+brew install python@3.9
+brew install python-tk@3.9
+pip3.9 install av
+```
+
 ## 📦 Supported Formats
 
 - Video: `.mxf`, `.mp4`, `.mov`, `.crm`, `.avi`
