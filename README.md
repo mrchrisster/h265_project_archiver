@@ -59,7 +59,7 @@ If you have large, long-term video project archives, this tool can cut file size
 ## 📁 Input/Output Example
 
 
-#### Input folder:
+## Input folder:
 
 ```txt
 MyVideoProject/
@@ -68,7 +68,7 @@ MyVideoProject/
 ├── Graphics/
 │   └── logo.png
 
-#### Output folder:
+## Output folder:
 MyVideoProject-265/
 ├── A001_C001.mp4          ← transcoded
 ├── Graphics/
