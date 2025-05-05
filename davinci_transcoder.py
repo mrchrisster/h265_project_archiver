@@ -224,15 +224,17 @@ def transcode_with_resolve(resolve_bundle, clip_path: Path, src_root: Path, arch
     w, h = map(int, props['Resolution'].split('x'))
     fps = f"{float(props.get('FPS') or props.get('Frame rate')):.6f}".rstrip('0').rstrip('.')
 
-    project.SetSetting("timelineUseCustomSettings", "1")
-    project.SetSetting("timelineResolutionWidth", str(w))
-    project.SetSetting("timelineResolutionHeight", str(h))
-    project.SetSetting("timelineFrameRate", fps)
-    project.SetSetting("timelinePlaybackFrameRate", fps)
+    # Improved stereo detection
+    use_stereo = (
+        channels == 2 and (
+            layout == "" or "stereo" in layout
+        )
+    )
 
-    use_stereo = channels == 2 and "stereo" in layout
     drt_path = DRT_TEMPLATE_STEREO if use_stereo else DRT_TEMPLATE_MONO
-    print(f"🎧 Detected {channels}ch {'(stereo)' if use_stereo else f'({layout})'}; using {'stereo' if use_stereo else 'mono'} template")
+
+    print(f"🎧 Detected {channels}ch ({layout if layout else 'unknown'}); using {'stereo' if use_stereo else 'mono'} template")
+
 
     tl_name = f"TL_{base}"
     timeline = mp.ImportTimelineFromFile(drt_path, {
@@ -242,6 +244,11 @@ def transcode_with_resolve(resolve_bundle, clip_path: Path, src_root: Path, arch
     if not timeline:
         print(f"❌ Failed to import template: {drt_path}")
         return False
+        
+    timeline.SetSetting("timelineResolutionWidth", str(w))
+    timeline.SetSetting("timelineResolutionHeight", str(h))
+    timeline.SetSetting("timelineFrameRate", fps)
+    timeline.SetSetting("timelinePlaybackFrameRate", fps)
 
     if not mp.AppendToTimeline([clip]):
         print("❌ Failed to append actual media to timeline.")
