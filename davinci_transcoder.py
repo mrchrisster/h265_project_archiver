@@ -20,8 +20,6 @@ import argparse
 import subprocess
 import time
 import platform
-import ctypes
-from ctypes import wintypes
 from pathlib import Path
 
 # Optional: PyAV integrity check
@@ -61,77 +59,25 @@ else:
 PROJECT_NAME = "Batch_H265"
 PRESET_NAME = Path(PRESET_XML_PATH).stem
 
-
-def kill_resolve():
-    """Terminate all DaVinci Resolve processes (Windows and macOS)."""
-    if IS_WIN:
-        subprocess.run(['taskkill', '/IM', 'Resolve.exe', '/F'],
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    else:
-        subprocess.run(['pkill', '-f', 'Resolve'],
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                       
-def is_resolve_running():
-    """Return True only if there’s a live Resolve window or a responsive scripting API."""
-    window_ok = False
-    if IS_WIN:
-        try:
-            import ctypes
-            window_ok = bool(ctypes.windll.user32.FindWindowW(None, "DaVinci Resolve"))
-        except Exception:
-            window_ok = False
-    api_ok = False
-    if RESOLVE_PY_MODULE:
-        sys.path.insert(0, RESOLVE_PY_MODULE)
-        try:
-            import DaVinciResolveScript as dvr
-            api_ok = bool(drv.scriptapp("Resolve"))
-        except Exception:
-            api_ok = False
-        finally:
-            sys.path.pop(0)
-    return window_ok or api_ok
-
 def init_resolve():
-    # 1. Detect truly running
-    running = is_resolve_running()
-    print(f"🔍 Resolve running? {running}")
-
-    # 2. If “running” is False but we still see Resolve.exe in task list, kill them
-    if not running and IS_WIN:
-        # check stale processes
-        stale = subprocess.run(['tasklist','/FI','IMAGENAME eq Resolve.exe'],
-                               capture_output=True, text=True).stdout
-        if 'Resolve.exe' in stale:
-            print("⚠️ Stale Resolve.exe processes found; killing them...")
-            kill_resolve()
-            time.sleep(1)
-
-    # 3. Launch if not running
-    if not is_resolve_running():
-        print("🔄 Starting DaVinci Resolve...")
-        if IS_WIN:
-            os.startfile(RESOLVE_EXE_PATH)
-        else:
-            subprocess.Popen(['open','-a','DaVinci Resolve'])
-        print("⏳ Waiting 7s for Resolve to start...")
-        time.sleep(7)
-    else:
-        print("ℹ️ Using existing Resolve process.")
-
-
-    # Set module path and load API
+    """
+    Attach to an already‑running DaVinci Resolve (must be open), or exit with an error message.
+    Returns a tuple (resolve, projectManager, project) on success, or None on failure.
+    """
+    # 1) Add the Resolve scripting API path (and DLL directory on Windows)
     sys.path.insert(0, RESOLVE_PY_MODULE)
     if IS_WIN:
         os.add_dll_directory(RESOLVE_DLL_PATH)
 
+    # 2) Import the DaVinci Resolve scripting module
     try:
         import DaVinciResolveScript as dvr
     except Exception as e:
-        print(f"❌ Failed to import DaVinciResolveScript: {e}")
+        print(f"❌ Could not import DaVinciResolveScript: {e}")
         return None
 
-    print("⏳ Waiting for Resolve scripting API...", end="", flush=True)
+    # 3) Attempt to connect to the Resolve application via the scripting API
+    print("⏳ Connecting to Resolve scripting API...", end="", flush=True)
     resolve = None
     for _ in range(30):
         resolve = dvr.scriptapp("Resolve")
@@ -141,14 +87,17 @@ def init_resolve():
         time.sleep(1)
     print()
     if not resolve:
-        print("❌ Failed to connect to Resolve.")
+        print("❌ DaVinci Resolve doesn’t appear to be running.")
+        print("   Please launch DaVinci Resolve Studio and re‑run this script.")
         return None
-    print("✅ Connected to Resolve.")
 
-    # Project manager and import
+    print("✅ Connected to DaVinci Resolve.")
+
+    # 4) Load or import the project
     pm = resolve.GetProjectManager()
-    if PROJECT_NAME not in (pm.GetProjectListInCurrentFolder() or []):
-        print(f"📦 Importing .drp as '{PROJECT_NAME}' from: {DRP_PATH}")
+    project_list = pm.GetProjectListInCurrentFolder() or []
+    if PROJECT_NAME not in project_list:
+        print(f"📦 Importing project '{PROJECT_NAME}' from: {DRP_PATH}")
         if not os.path.isfile(DRP_PATH) or not pm.ImportProject(DRP_PATH, PROJECT_NAME):
             print(f"❌ Failed to import .drp at {DRP_PATH}")
             return None
@@ -160,26 +109,30 @@ def init_resolve():
         return None
 
     project = pm.GetCurrentProject()
-    print(f"✅ Using project: '{project.GetName()}'")
+    print(f"✅ Loaded project: {project.GetName()}")
+
+    # 5) Switch to the Deliver page and load the render preset
     resolve.OpenPage("deliver")
     time.sleep(1)
 
-    for p in project.GetRenderPresetList() or []:
-        if p == PRESET_NAME:
+    # Remove any existing preset with the same name
+    for preset in project.GetRenderPresetList() or []:
+        if preset == PRESET_NAME:
             project.DeleteRenderPreset(PRESET_NAME)
             print(f"🗑️ Deleted existing preset '{PRESET_NAME}'")
             break
 
     if not os.path.isfile(PRESET_XML_PATH):
-        print(f"❌ Preset XML not found: {PRESET_XML_PATH}")
+        print(f"❌ Render preset XML not found at: {PRESET_XML_PATH}")
         return None
+
     if not resolve.ImportRenderPreset(PRESET_XML_PATH):
-        print("⚠️ XML preset import may have failed.")
+        print("⚠️ Warning: render preset import may have failed.")
     else:
-        print(f"✅ Loaded render preset '{PRESET_NAME}'")
+        print(f"✅ Imported render preset '{PRESET_NAME}'")
 
+    # 6) Return the Resolve app, Project Manager, and Project objects
     return resolve, pm, project
-
 
 def select_folder_dialog(prompt: str) -> Path:
     try:
