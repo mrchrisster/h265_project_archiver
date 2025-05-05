@@ -11,8 +11,6 @@ Archives a video project by:
 Supports resuming interrupted transfers (skips existing good files, re-renders corrupted ones),
 and runs a post-render integrity check using PyAV (or FFmpeg CLI fallback).
 
-PREREQUISITES: To force mono audio tracks on timeline creation,
-set DaVinci → Preferences → User → Edit → Audio → Timeline Audio Tracks → Mono
 """
 
 import os
@@ -21,6 +19,9 @@ import shutil
 import argparse
 import subprocess
 import time
+import platform
+import ctypes
+from ctypes import wintypes
 from pathlib import Path
 
 # Optional: PyAV integrity check
@@ -31,41 +32,104 @@ except ImportError:
     HAVE_PYAV = False
     print("⚠️ PyAV not installed; using FFmpeg CLI for integrity checks.")
 
-# —— Resolve paths ——
-RESOLVE_PY_MODULE       = r"C:\ProgramData\Blackmagic Design\DaVinci Resolve\Support\Developer\Scripting\Modules"
-RESOLVE_DLL_PATH        = r"C:\Program Files\Blackmagic Design\DaVinci Resolve"
-RESOLVE_EXE_PATH        = r"C:\Program Files\Blackmagic Design\DaVinci Resolve\Resolve.exe"
 
-PROJECT_NAME            = "Batch_H265"
-DRP_PATH                = r"C:\code\davinci_encoder\Batch_H265.drp"
-PRESET_XML_PATH         = r"C:\code\davinci_encoder\Batch_H265_RenderSettings.xml"
-PRESET_NAME             = Path(PRESET_XML_PATH).stem
-drx_file                = Path(r"C:\code\davinci_encoder\rawfix.drx")
-DRT_TEMPLATE_MONO       = r"C:\code\davinci_encoder\Template_Mono_1ch.drt"
-DRT_TEMPLATE_STEREO     = r"C:\code\davinci_encoder\Template_Stereo_2ch.drt"
+from pathlib import Path
+
+IS_MAC = platform.system() == "Darwin"
+IS_WIN = platform.system() == "Windows"
+
+if IS_MAC:
+    RESOLVE_PY_MODULE = "/Library/Application Support/Blackmagic Design/DaVinci Resolve/Developer/Scripting/Modules"
+    RESOLVE_EXE_PATH  = "/Applications/DaVinci Resolve/DaVinci Resolve.app"
+    DRP_PATH          = os.path.expanduser("~/code/davinci_encoder/Batch_H265.drp")
+    PRESET_XML_PATH   = os.path.expanduser("~/code/davinci_encoder/Batch_H265_RenderSettings.xml")
+    drx_file          = os.path.expanduser("~/code/davinci_encoder/rawfix.drx")
+    DRT_TEMPLATE_MONO =  os.path.expanduser("~/code/davinci_encoder/Template_Mono_1ch.drt")
+    DRT_TEMPLATE_STEREO =  os.path.expanduser("~/code/davinci_encoder/Template_Stereo_2ch.drt")
+elif IS_WIN:
+    RESOLVE_PY_MODULE = r"C:\ProgramData\Blackmagic Design\DaVinci Resolve\Support\Developer\Scripting\Modules"
+    RESOLVE_DLL_PATH  = r"C:\Program Files\Blackmagic Design\DaVinci Resolve"
+    RESOLVE_EXE_PATH  = r"C:\Program Files\Blackmagic Design\DaVinci Resolve\Resolve.exe"
+    DRP_PATH          = r"C:\code\davinci_encoder\Batch_H265.drp"
+    PRESET_XML_PATH   = r"C:\code\davinci_encoder\Batch_H265_RenderSettings.xml"
+    drx_file          = Path(r"C:\code\davinci_encoder\rawfix.drx")
+    DRT_TEMPLATE_MONO = r"C:\code\davinci_encoder\Template_Mono_1ch.drt"
+    DRT_TEMPLATE_STEREO = r"C:\code\davinci_encoder\Template_Stereo_2ch.drt"
+else:
+    sys.exit("❌ Unsupported OS")
+
+PROJECT_NAME = "Batch_H265"
+PRESET_NAME = Path(PRESET_XML_PATH).stem
 
 
+def kill_resolve():
+    """Terminate all DaVinci Resolve processes (Windows and macOS)."""
+    if IS_WIN:
+        subprocess.run(['taskkill', '/IM', 'Resolve.exe', '/F'],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    else:
+        subprocess.run(['pkill', '-f', 'Resolve'],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                       
 def is_resolve_running():
-    try:
-        out = subprocess.check_output(['tasklist', '/FI', 'IMAGENAME eq Resolve.exe'], text=True)
-        return 'Resolve.exe' in out
-    except Exception:
-        return False
-
+    """Return True only if there’s a live Resolve window or a responsive scripting API."""
+    window_ok = False
+    if IS_WIN:
+        try:
+            import ctypes
+            window_ok = bool(ctypes.windll.user32.FindWindowW(None, "DaVinci Resolve"))
+        except Exception:
+            window_ok = False
+    api_ok = False
+    if RESOLVE_PY_MODULE:
+        sys.path.insert(0, RESOLVE_PY_MODULE)
+        try:
+            import DaVinciResolveScript as dvr
+            api_ok = bool(drv.scriptapp("Resolve"))
+        except Exception:
+            api_ok = False
+        finally:
+            sys.path.pop(0)
+    return window_ok or api_ok
 
 def init_resolve():
-    if not is_resolve_running():
-        print("🔄 Resolve not running; launching...")
-        if not os.path.isfile(RESOLVE_EXE_PATH):
-            print(f"❌ Cannot find Resolve executable at: {RESOLVE_EXE_PATH}")
-            return None
-        subprocess.Popen([RESOLVE_EXE_PATH])
-    else:
-        print("ℹ️ Resolve already running.")
+    # 1. Detect truly running
+    running = is_resolve_running()
+    print(f"🔍 Resolve running? {running}")
 
+    # 2. If “running” is False but we still see Resolve.exe in task list, kill them
+    if not running and IS_WIN:
+        # check stale processes
+        stale = subprocess.run(['tasklist','/FI','IMAGENAME eq Resolve.exe'],
+                               capture_output=True, text=True).stdout
+        if 'Resolve.exe' in stale:
+            print("⚠️ Stale Resolve.exe processes found; killing them...")
+            kill_resolve()
+            time.sleep(1)
+
+    # 3. Launch if not running
+    if not is_resolve_running():
+        print("🔄 Starting DaVinci Resolve...")
+        if IS_WIN:
+            os.startfile(RESOLVE_EXE_PATH)
+        else:
+            subprocess.Popen(['open','-a','DaVinci Resolve'])
+        print("⏳ Waiting 7s for Resolve to start...")
+        time.sleep(7)
+    else:
+        print("ℹ️ Using existing Resolve process.")
+
+
+    # Set module path and load API
     sys.path.insert(0, RESOLVE_PY_MODULE)
-    os.add_dll_directory(RESOLVE_DLL_PATH)
-    import DaVinciResolveScript as dvr
+    if IS_WIN:
+        os.add_dll_directory(RESOLVE_DLL_PATH)
+
+    try:
+        import DaVinciResolveScript as dvr
+    except Exception as e:
+        print(f"❌ Failed to import DaVinciResolveScript: {e}")
+        return None
 
     print("⏳ Waiting for Resolve scripting API...", end="", flush=True)
     resolve = None
@@ -81,6 +145,7 @@ def init_resolve():
         return None
     print("✅ Connected to Resolve.")
 
+    # Project manager and import
     pm = resolve.GetProjectManager()
     if PROJECT_NAME not in (pm.GetProjectListInCurrentFolder() or []):
         print(f"📦 Importing .drp as '{PROJECT_NAME}' from: {DRP_PATH}")
@@ -233,7 +298,7 @@ def transcode_with_resolve(resolve_bundle, clip_path: Path, src_root: Path, arch
 
     drt_path = DRT_TEMPLATE_STEREO if use_stereo else DRT_TEMPLATE_MONO
 
-    print(f"🎧 Detected {channels}ch ({layout if layout else 'unknown'}); using {'stereo' if use_stereo else 'mono'} template")
+    print(f"🎧 Detected {channels}ch; using {'stereo' if use_stereo else 'mono'} template")
 
 
     tl_name = f"TL_{base}"
@@ -249,6 +314,11 @@ def transcode_with_resolve(resolve_bundle, clip_path: Path, src_root: Path, arch
     timeline.SetSetting("timelineResolutionHeight", str(h))
     timeline.SetSetting("timelineFrameRate", fps)
     timeline.SetSetting("timelinePlaybackFrameRate", fps)
+    
+    tw = timeline.GetSetting("timelineResolutionWidth")
+    th = timeline.GetSetting("timelineResolutionHeight")
+    tfps = timeline.GetSetting("timelineFrameRate")
+    print(f"📐 Timeline set to: {tw}x{th} @ {tfps} fps")
 
     if not mp.AppendToTimeline([clip]):
         print("❌ Failed to append actual media to timeline.")
@@ -264,7 +334,6 @@ def transcode_with_resolve(resolve_bundle, clip_path: Path, src_root: Path, arch
         for i in reversed(range(1, timeline.GetTrackCount(track_type) + 1)):
             if i not in used_tracks[track_type]:
                 timeline.DeleteTrack(track_type, i)
-                print(f"🗑️ Deleted empty {track_type} track {i}")
 
     project.LoadRenderPreset(PRESET_NAME)
     project.SetRenderSettings({
