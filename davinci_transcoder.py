@@ -318,46 +318,67 @@ def transcode_with_resolve(resolve_bundle, clip_path: Path, src_root: Path, arch
     print(f"⚠️ Integrity still failed: {rel}")
     return False
 
+# __main__ block with folder-based skip logic
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Archive & transcode via Resolve")
     parser.add_argument('-s', '--source', help="Project root folder")
-    parser.add_argument('-d', '--dest', help="Destination root folder")
+    parser.add_argument('-d', '--dest',   help="Destination root folder")
     parser.add_argument('-v', '--video-exts', nargs='*',
-                        default=['.mxf', '.mp4', '.mov', '.crm', '.avi'])
+                        default=['.mxf', '.mp4', '.mov', '.crm', '.avi'],
+                        help="Video extensions to transcode")
     parser.add_argument('-r', '--raw-exts', nargs='*',
-                        default=['.arw', '.cr2', '.cr3', '.nef', '.dng', '.raf', '.orf', '.rw2', '.sr2'])
+                        default=['.arw', '.cr2', '.cr3', '.nef', '.dng', '.raf', '.orf', '.rw2', '.sr2'],
+                        help="Raw file extensions to ignore during asset copy")
     args = parser.parse_args()
 
+    # 1. Determine source and destination
     src = Path(args.source) if args.source else select_folder_dialog("Select project root")
-    dst = Path(args.dest) if args.dest else select_folder_dialog("Select destination root")
+    dst = Path(args.dest)   if args.dest   else select_folder_dialog("Select destination root")
     src, dst = src.resolve(), dst.resolve()
 
+    # 2. Gather all files
     non_media_all, media_all = gather_files(src, args.video_exts, args.raw_exts)
-    media = [m for m in media_all if 'proxy' not in (p.lower() for p in m.parts) and not m.stem.lower().endswith('_proxy')]
+
+    # 3. Build map: folder -> set of media stems in that folder
+    media_stems_by_dir = {}
+    for m in media_all:
+        media_stems_by_dir.setdefault(m.parent, set()).add(m.stem.lower())
+
+    # 4. Prepare archive folder
     archive_root = dst / f"{src.name}-265"
     archive_root.mkdir(parents=True, exist_ok=True)
 
-    media_basenames = {m.stem for m in media_all}
+    # 5. Copy non-media assets, skipping any file that shares stem with a media file in same folder
     for f in non_media_all:
         rel = f.relative_to(src)
-        if f.stem in media_basenames:
-            print(f"🔕 Skipping asset (same base as media): {rel}")
+        stem = f.stem.lower()
+
+        # Skip side‑cars that have same name as media in the same directory
+        if stem in media_stems_by_dir.get(f.parent, set()):
+            print(f"🔕 Skipping side‑car asset: {rel}")
             continue
+
+        # Copy if not already present with correct size
         outp = archive_root / rel
         outp.parent.mkdir(parents=True, exist_ok=True)
         if outp.exists() and outp.stat().st_size == f.stat().st_size:
-            print(f"⏭️ Skipping (exists): {rel}")
+            print(f"⏭️ Skipping existing: {rel}")
             continue
+
         shutil.copy2(f, outp)
         print(f"📋 Copied asset: {rel}")
 
+    # 6. Initialize Resolve
     resolve_bundle = init_resolve()
     if not resolve_bundle:
         sys.exit(1)
 
-    for m in media:
-        if not transcode_with_resolve(resolve_bundle, m, src, archive_root):
-            print(f"⚠️ Failed to transcode: {m.relative_to(src)}")
+    # 7. Transcode each media file
+    for clip_path in media_all:
+        # Skip proxies and raw files if desired (media_all already excludes proxies by design)
+        if not transcode_with_resolve(resolve_bundle, clip_path, src, archive_root):
+            print(f"⚠️ Failed to transcode: {clip_path.relative_to(src)}")
 
     print("\n✅ Archive & transcode complete!")
+
