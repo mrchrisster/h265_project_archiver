@@ -61,7 +61,7 @@ PROJECT_NAME = "Batch_H265"
 PRESET_NAME = Path(PRESET_XML_PATH).stem
 
 # Directories (by name) to skip entirely
-EXCLUDE_DIRS = ["Exports", "Proxies"]
+EXCLUDE_DIRS = ["Exports", "Proxies", "Proxy"]
 
 # File‑name patterns to skip entirely (case‑insensitive)
 # e.g. "_proxy" will skip foo_proxy.mov or anything with “proxy” in its stem
@@ -167,25 +167,27 @@ def format_size(n_bytes: int) -> str:
 def gather_files(src: Path, video_exts, raw_exts):
     """
     Walk src, returning (non_media, media), but skipping:
-      • any directory in EXCLUDE_DIRS
-      • any file whose name matches one of EXCLUDE_FILE_PATTERNS
+      • directories in EXCLUDE_DIRS
+      • files whose suffix is in raw_exts (skipped entirely)
     """
-    vset = {e.lower() for e in video_exts}
-    rset = {e.lower() for e in raw_exts}
+    vset    = {e.lower() for e in video_exts}
+    skipset = {e.lower() for e in raw_exts}
     non_media, media = [], []
 
     for root, dirs, files in os.walk(src):
-        # 1) prune out unwanted directories
+        # 1) prune unwanted directories
         dirs[:] = [d for d in dirs if d not in EXCLUDE_DIRS]
 
         for f in files:
-            # 2) skip unwanted filenames
-            lname = f.lower()
-            if any(pat in lname for pat in EXCLUDE_FILE_PATTERNS):
+            p = Path(root) / f
+            suffix = p.suffix.lower()
+
+            # 2) skip raw‑image files entirely
+            if suffix in skipset:
                 continue
 
-            p = Path(root) / f
-            if p.suffix.lower() in vset or p.suffix.lower() in rset:
+            # 3) classify what remains
+            if suffix in vset:
                 media.append(p)
             else:
                 non_media.append(p)
@@ -406,4 +408,3 @@ if __name__ == '__main__':
             print(f"⚠️ Failed to transcode: {clip_path.relative_to(src)}")
 
     print("\n✅ Archive & transcode complete!")
-
