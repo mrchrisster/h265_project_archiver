@@ -243,8 +243,18 @@ def transcode_with_resolve(resolve_bundle, clip_path: Path, src_root: Path, arch
         print(f"✅ Skipping (exists & OK): {rel}")
         return True
     elif out_file.exists():
-        print(f"⚠️ Corrupt, deleting: {rel}")
-        out_file.unlink()
+        print(f"⚠️ Corrupt output, deleting old file: {out_file}")
+        # Try a few times in case Resolve or another process still holds it open
+        for attempt in range(3):
+            try:
+                out_file.unlink()
+                break
+            except PermissionError:
+                print(f"🕒 File locked, retrying delete (attempt {attempt+1}/3)…")
+                time.sleep(1)
+        else:
+            print(f"❌ Could not delete old file after retries: {out_file}")
+            return False
 
     mp = project.GetMediaPool()
     storage = resolve.GetMediaStorage()
