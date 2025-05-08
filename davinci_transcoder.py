@@ -229,6 +229,26 @@ def get_audio_info(clip):
     layout = (props.get("Audio Track Type") or "").lower()
     return channels, layout
 
+def get_timecode_from_clip(clip):
+    """Return the clip’s start timecode, or None."""
+    props     = clip.GetClipProperty()
+    return props.get("Start TC") or props.get("Start Timecode")
+
+def get_timecode_from_mp4(mp4_path):
+    """Use ffprobe to read the embedded timecode tag from an MP4."""
+    cmd = [
+        'ffprobe','-v','error',
+        '-select_streams','v:0',
+        '-show_entries','stream_tags=timecode',
+        '-of','default=noprint_wrappers=1:nokey=1',
+        str(mp4_path)
+    ]
+    try:
+        out = subprocess.check_output(cmd, text=True).strip()
+        return out or None
+    except Exception:
+        return None
+# ─── Replace your existing transcode_with_resolve() with this version ──
 
 def transcode_with_resolve(resolve_bundle, clip_path: Path, src_root: Path, archive_root: Path) -> bool:
     resolve, pm, project = resolve_bundle
@@ -239,12 +259,15 @@ def transcode_with_resolve(resolve_bundle, clip_path: Path, src_root: Path, arch
     out_folder.mkdir(parents=True, exist_ok=True)
     out_file = out_folder / f"{base}.mp4"
 
+    # 1) Quick skip if already rendered correctly
     if out_file.exists() and is_readable(out_file):
         print(f"✅ Skipping (exists & OK): {rel}")
         return True
-    elif out_file.exists():
+
+    # 2) If corrupt MP4 exists, delete it (with retries on Windows locks)
+    if out_file.exists():
         print(f"⚠️ Corrupt output, deleting old file: {out_file}")
-        # Try a few times in case Resolve or another process still holds it open
+        time.sleep(1)
         for attempt in range(3):
             try:
                 out_file.unlink()
@@ -256,16 +279,20 @@ def transcode_with_resolve(resolve_bundle, clip_path: Path, src_root: Path, arch
             print(f"❌ Could not delete old file after retries: {out_file}")
             return False
 
+    # 3) Clean Resolve project
     mp = project.GetMediaPool()
     storage = resolve.GetMediaStorage()
     project.DeleteAllRenderJobs()
-    for i in range(1, project.GetTimelineCount()+1):
+    for i in range(1, project.GetTimelineCount() + 1):
         tl = project.GetTimelineByIndex(i)
-        if tl: mp.DeleteTimelines([tl])
+        if tl:
+            mp.DeleteTimelines([tl])
     clips = mp.GetRootFolder().GetClipList() or []
-    if clips: mp.DeleteClips(clips)
+    if clips:
+        mp.DeleteClips(clips)
     print("🧹 Resolve cleaned.")
 
+    # 4) Import source clip
     print(f"📥 Importing: {clip_path}")
     items = storage.AddItemListToMediaPool([str(clip_path)])
     time.sleep(2)
@@ -274,23 +301,31 @@ def transcode_with_resolve(resolve_bundle, clip_path: Path, src_root: Path, arch
         return False
     clip = items[0]
 
-    channels, layout = get_audio_info(clip)
+    # 5) Grab source timecode (if any)
+    source_tc = get_timecode_from_clip(clip)
+    if source_tc:
+        print(f"🔎 Source Start TC: {source_tc}")
+    else:
+        print("⚠️ No Start TC found on source clip; defaulting to 00:00:00:00")
+
+    # 6) Read clip properties for resolution & FPS
     props = clip.GetClipProperty()
     w, h = map(int, props['Resolution'].split('x'))
     fps = f"{float(props.get('FPS') or props.get('Frame rate')):.6f}".rstrip('0').rstrip('.')
 
-    # Improved stereo detection
-    use_stereo = (
-        channels == 2 and (
-            layout == "" or "stereo" in layout
-        )
-    )
+    project.SetSetting("timelineUseCustomSettings", "1")
+    project.SetSetting("timelineResolutionWidth", str(w))
+    project.SetSetting("timelineResolutionHeight", str(h))
+    project.SetSetting("timelineFrameRate", fps)
+    project.SetSetting("timelinePlaybackFrameRate", fps)
 
+    # 7) Pick mono vs stereo template
+    channels, layout = get_audio_info(clip)
+    use_stereo = (channels == 2 and (layout == "" or "stereo" in layout))
     drt_path = DRT_TEMPLATE_STEREO if use_stereo else DRT_TEMPLATE_MONO
-
     print(f"🎧 Detected {channels}ch; using {'stereo' if use_stereo else 'mono'} template")
 
-
+    # 8) Import template timeline
     tl_name = f"TL_{base}"
     timeline = mp.ImportTimelineFromFile(drt_path, {
         "timelineName": tl_name,
@@ -299,17 +334,23 @@ def transcode_with_resolve(resolve_bundle, clip_path: Path, src_root: Path, arch
     if not timeline:
         print(f"❌ Failed to import template: {drt_path}")
         return False
-        
+
+    # 9) Apply source timecode to the new timeline
+    if source_tc:
+        ok = timeline.SetStartTimecode(source_tc)
+        print(f"✅ SetStartTimecode returned: {ok}")
+
+    # 10) Double‑check timeline settings
     timeline.SetSetting("timelineResolutionWidth", str(w))
     timeline.SetSetting("timelineResolutionHeight", str(h))
     timeline.SetSetting("timelineFrameRate", fps)
     timeline.SetSetting("timelinePlaybackFrameRate", fps)
-    
     tw = timeline.GetSetting("timelineResolutionWidth")
     th = timeline.GetSetting("timelineResolutionHeight")
     tfps = timeline.GetSetting("timelineFrameRate")
     print(f"📐 Timeline set to: {tw}x{th} @ {tfps} fps")
 
+    # 11) Append clip and prune empty tracks
     if not mp.AppendToTimeline([clip]):
         print("❌ Failed to append actual media to timeline.")
         return False
@@ -319,18 +360,19 @@ def transcode_with_resolve(resolve_bundle, clip_path: Path, src_root: Path, arch
         for i in range(1, timeline.GetTrackCount(track_type) + 1):
             if timeline.GetItemListInTrack(track_type, i):
                 used_tracks[track_type].add(i)
-
     for track_type in ['video', 'audio']:
         for i in reversed(range(1, timeline.GetTrackCount(track_type) + 1)):
             if i not in used_tracks[track_type]:
                 timeline.DeleteTrack(track_type, i)
 
+    # 12) Load render preset (assumes you’ve already imported it) and set output
     project.LoadRenderPreset(PRESET_NAME)
     project.SetRenderSettings({
         'TargetDir': str(out_folder),
         'CustomName': base,
     })
 
+    # 13) Optional DRX grade
     if os.path.exists(drx_file):
         resolve.OpenPage("color")
         time.sleep(1)
@@ -339,6 +381,7 @@ def transcode_with_resolve(resolve_bundle, clip_path: Path, src_root: Path, arch
             if callable(fn) and fn(str(drx_file), 0):
                 print(f"✅ Applied grade to {vc.GetName()}")
 
+    # 14) Render
     job_id = project.AddRenderJob()
     if not job_id:
         print(f"❌ Failed to queue render for {base}")
@@ -349,9 +392,20 @@ def transcode_with_resolve(resolve_bundle, clip_path: Path, src_root: Path, arch
         time.sleep(1)
     print(f"🏁 Completed render: {rel}")
 
+    # 15) Verify integrity and timecode in the MP4
     if is_readable(out_file):
         print(f"✅ Integrity OK: {rel}")
+        mp4_tc = get_timecode_from_mp4(out_file)
+        if mp4_tc:
+            print(f"▶️ Rendered MP4 timecode: {mp4_tc}")
+            if source_tc and mp4_tc == source_tc:
+                print("🎉 SUCCESS: MP4 timecode matches source!")
+            else:
+                print("❌ WARNING: MP4 timecode does not match source.")
+        else:
+            print("⚠️ No timecode tag found in MP4 (or ffprobe missing).")
         return True
+
     print(f"⚠️ Integrity still failed: {rel}")
     return False
 
