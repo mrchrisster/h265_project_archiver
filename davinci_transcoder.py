@@ -302,10 +302,13 @@ def transcode_with_resolve(resolve_bundle, clip_path: Path, src_root: Path, arch
     clip = items[0]
 
     # 5) Grab source timecode (if any)
-    source_tc = get_timecode_from_clip(clip)
-    if source_tc:
-        print(f"🔎 Source Start TC: {source_tc}")
+    raw_source_tc = get_timecode_from_clip(clip)
+    if raw_source_tc:
+        # normalize drop-frame semicolon to plain colon
+        source_tc = raw_source_tc.replace(';', ':')
+        print(f"🔎 Source Start TC: {raw_source_tc}  →  normalized to {source_tc}")
     else:
+        source_tc = None
         print("⚠️ No Start TC found on source clip; defaulting to 00:00:00:00")
 
     # 6) Read clip properties for resolution & FPS
