@@ -14,6 +14,8 @@
 
 If you have large, long-term video project archives, this tool can cut file sizes by up to **10×** while preserving folder structures and high visual quality — ideal for efficient backups and future access.
 
+It is meant for video production companies who want to archive their projects and save space or when working together with remote editors.
+
 ---
 
 ## 🧩 Key Features
