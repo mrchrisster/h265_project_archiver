@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+
 """
 archive_and_transcode.py
 
@@ -42,17 +43,14 @@ if IS_MAC:
     DRP_PATH          = os.path.expanduser("~/code/davinci_encoder/Batch_H265.drp")
     PRESET_XML_PATH   = os.path.expanduser("~/code/davinci_encoder/Batch_H265_RenderSettings.xml")
     drx_file          = os.path.expanduser("~/code/davinci_encoder/rawfix.drx")
-    DRT_TEMPLATE_MONO =  os.path.expanduser("~/code/davinci_encoder/Template_Mono_1ch.drt")
-    DRT_TEMPLATE_STEREO =  os.path.expanduser("~/code/davinci_encoder/Template_Stereo_2ch.drt")
 elif IS_WIN:
     RESOLVE_PY_MODULE = r"C:\ProgramData\Blackmagic Design\DaVinci Resolve\Support\Developer\Scripting\Modules"
     RESOLVE_DLL_PATH  = r"C:\Program Files\Blackmagic Design\DaVinci Resolve"
     RESOLVE_EXE_PATH  = r"C:\Program Files\Blackmagic Design\DaVinci Resolve\Resolve.exe"
     DRP_PATH          = r"C:\code\davinci_encoder\Batch_H265.drp"
     PRESET_XML_PATH   = r"C:\code\davinci_encoder\Batch_H265_RenderSettings.xml"
+    PRESET_XML_PATH_ALPHA = r"C:\code\davinci_encoder\QT_Alpha_RenderSettings.xml"
     drx_file          = r"C:\code\davinci_encoder\rawfix.drx"
-    DRT_TEMPLATE_MONO = r"C:\code\davinci_encoder\Template_Mono_1ch.drt"
-    DRT_TEMPLATE_STEREO = r"C:\code\davinci_encoder\Template_Stereo_2ch.drt"
 else:
     sys.exit("❌ Unsupported OS")
     
@@ -63,15 +61,14 @@ PRESET_NAME = Path(PRESET_XML_PATH).stem
 # Directories (by name) to skip entirely
 EXCLUDE_DIRS = ["Exports", "Proxies", "Proxy"]
 
-# File‑name patterns to skip entirely (case‑insensitive)
+# File-name patterns to skip entirely (case-insensitive)
 # e.g. "_proxy" will skip foo_proxy.mov or anything with “proxy” in its stem
 EXCLUDE_FILE_PATTERNS = ["_proxy"]
 
 
-
 def init_resolve():
     """
-    Attach to an already‑running DaVinci Resolve (must be open), or exit with an error message.
+    Attach to an already-running DaVinci Resolve (must be open), or exit with an error message.
     Returns a tuple (resolve, projectManager, project) on success, or None on failure.
     """
     # 1) Add the Resolve scripting API path (and DLL directory on Windows)
@@ -98,7 +95,7 @@ def init_resolve():
     print()
     if not resolve:
         print("❌ DaVinci Resolve doesn’t appear to be running.")
-        print("   Please launch DaVinci Resolve Studio and re‑run this script.")
+        print("   Please launch DaVinci Resolve Studio and re-run this script.")
         return None
 
     print("✅ Connected to DaVinci Resolve.")
@@ -144,6 +141,7 @@ def init_resolve():
     # 6) Return the Resolve app, Project Manager, and Project objects
     return resolve, pm, project
 
+
 def select_folder_dialog(prompt: str) -> Path:
     try:
         import tkinter as tk
@@ -170,8 +168,8 @@ def gather_files(src: Path, video_exts, raw_exts):
       • directories in EXCLUDE_DIRS
       • files whose suffix is in raw_exts (skipped entirely)
     """
-    vset    = {e.lower() for e in video_exts}
-    skipset = {e.lower() for e in raw_exts}
+    vset      = {e.lower() for e in video_exts}
+    skipset   = {e.lower() for e in raw_exts}
     non_media, media = [], []
 
     for root, dirs, files in os.walk(src):
@@ -182,7 +180,7 @@ def gather_files(src: Path, video_exts, raw_exts):
             p = Path(root) / f
             suffix = p.suffix.lower()
 
-            # 2) skip raw‑image files entirely
+            # 2) skip raw-image files entirely
             if suffix in skipset:
                 continue
 
@@ -196,21 +194,40 @@ def gather_files(src: Path, video_exts, raw_exts):
 
 
 def is_readable(path: Path) -> bool:
-    if not path.exists():
-        print(f"⚠️ Integrity failed (not found): {path}")
+    """
+    Checks if a video file is readable.
+    - PyAV: Attempts to open and decode one frame.
+    - FFmpeg: Probes the first second (-t 1) instead of the whole file for speed.
+    """
+    if not path.exists() or path.stat().st_size == 0:
+        print(f"⚠️ Integrity failed (not found or zero size): {path}")
         return False
+        
     if HAVE_PYAV:
         try:
-            with av.open(str(path)) as ct:
-                for _ in ct.decode(video=0): break
+            with av.open(str(path)) as container:
+                # Decode just one frame to confirm readability
+                for frame in container.decode(video=0):
+                    break
             return True
         except Exception as e:
             print(f"🔍 PyAV error on {path.name}: {e}")
             return False
-    p = subprocess.run(['ffmpeg','-v','error','-i',str(path),'-f','null','-'],
-                       stderr=subprocess.PIPE, stdout=subprocess.DEVNULL)
-    return p.returncode == 0
-
+            
+    # --- OPTIMIZED FFmpeg FALLBACK ---
+    # The "-t 1" argument tells FFmpeg to only process the first second,
+    # making the check significantly faster.
+    p = subprocess.run(
+        ['ffmpeg', '-v', 'error', '-i', str(path), '-t', '1', '-f', 'null', '-'],
+        stderr=subprocess.PIPE,
+        stdout=subprocess.DEVNULL
+    )
+    
+    if p.returncode != 0:
+        print(f"🔍 FFmpeg integrity check failed for {path.name}")
+        return False
+        
+    return True
 
 def get_audio_info(clip):
     for _ in range(20):
@@ -231,7 +248,7 @@ def get_audio_info(clip):
 
 def get_timecode_from_clip(clip):
     """Return the clip’s start timecode, or None."""
-    props     = clip.GetClipProperty()
+    props      = clip.GetClipProperty()
     return props.get("Start TC") or props.get("Start Timecode")
 
 def get_timecode_from_mp4(mp4_path):
@@ -248,171 +265,202 @@ def get_timecode_from_mp4(mp4_path):
         return out or None
     except Exception:
         return None
-# ─── Replace your existing transcode_with_resolve() with this version ──
+        
+        
+def has_alpha_channel(file_path: Path) -> bool:
+    """Uses ffprobe to detect if a video file has an alpha channel."""
+    print(f"🔬 Checking for alpha channel in: {file_path.name}")
+    cmd = [
+        'ffprobe', '-v', 'error',
+        '-select_streams', 'v:0',
+        '-show_entries', 'stream=pix_fmt',
+        '-of', 'default=noprint_wrappers=1:nokey=1',
+        str(file_path)
+    ]
+    try:
+        pix_fmt = subprocess.check_output(cmd, text=True, stderr=subprocess.PIPE).strip()
+        if 'a' in pix_fmt:
+            print(f"✅ Alpha channel detected (format: {pix_fmt}).")
+            return True
+    except subprocess.CalledProcessError as e:
+        print(f"⚠️ ffprobe failed for {file_path.name}: {e.stderr}")
+    except FileNotFoundError:
+        print("⚠️ ffprobe command not found. Cannot detect alpha channels.")
+        return False # Fallback to no alpha if ffprobe is missing
+        
+    print("🔸 No alpha channel detected.")
+    return False
+    
+    
 
 def transcode_with_resolve(resolve_bundle, clip_path: Path, src_root: Path, archive_root: Path) -> bool:
     resolve, pm, project = resolve_bundle
     base = clip_path.stem
     rel = clip_path.relative_to(src_root) if src_root in clip_path.parents else Path(base)
-
     out_folder = archive_root / rel.parent
+    
+    use_alpha_preset = has_alpha_channel(clip_path)
+    if use_alpha_preset:
+        preset_to_use = PRESET_NAME_ALPHA
+        # Alpha renders should be .mov, not .mp4
+        out_file = out_folder / f"{base}.mov"
+    else:
+        preset_to_use = PRESET_NAME
+        out_file = out_folder / f"{base}.mp4"    
+    
     out_folder.mkdir(parents=True, exist_ok=True)
-    out_file = out_folder / f"{base}.mp4"
 
-    # 1) Quick skip if already rendered correctly
+    # 1) Skip if already rendered correctly
     if out_file.exists() and is_readable(out_file):
         print(f"✅ Skipping (exists & OK): {rel}")
         return True
 
-    # 2) If corrupt MP4 exists, delete it (with retries on Windows locks)
+    # 2) Delete corrupt existing file
     if out_file.exists():
         print(f"⚠️ Corrupt output, deleting old file: {out_file}")
-        time.sleep(1)
-        for attempt in range(3):
-            try:
-                out_file.unlink()
-                break
-            except PermissionError:
-                print(f"🕒 File locked, retrying delete (attempt {attempt+1}/3)…")
-                time.sleep(1)
-        else:
-            print(f"❌ Could not delete old file after retries: {out_file}")
-            return False
+        try: out_file.unlink()
+        except OSError as e: print(f"❌ Could not delete old file: {e}"); return False
 
     # 3) Clean Resolve project
     mp = project.GetMediaPool()
     storage = resolve.GetMediaStorage()
     project.DeleteAllRenderJobs()
-    for i in range(1, project.GetTimelineCount() + 1):
-        tl = project.GetTimelineByIndex(i)
-        if tl:
-            mp.DeleteTimelines([tl])
-    clips = mp.GetRootFolder().GetClipList() or []
-    if clips:
-        mp.DeleteClips(clips)
+    for i in range(project.GetTimelineCount(), 0, -1):
+        if tl := project.GetTimelineByIndex(i): mp.DeleteTimelines([tl])
+    if clips := mp.GetRootFolder().GetClipList(): mp.DeleteClips(clips)
     print("🧹 Resolve cleaned.")
 
     # 4) Import source clip
     print(f"📥 Importing: {clip_path}")
     items = storage.AddItemListToMediaPool([str(clip_path)])
     time.sleep(2)
-    if not items:
-        print(f"❌ Import failed: {clip_path}")
-        return False
+    if not items: print(f"❌ Import failed: {clip_path}"); return False
     clip = items[0]
 
-    # 5) Grab source timecode (if any)
-    raw_source_tc = get_timecode_from_clip(clip)
-    if raw_source_tc:
-        # normalize drop-frame semicolon to plain colon
-        source_tc = raw_source_tc.replace(';', ':')
-        print(f"🔎 Source Start TC: {raw_source_tc}  →  normalized to {source_tc}")
-    else:
-        source_tc = None
-        print("⚠️ No Start TC found on source clip; defaulting to 00:00:00:00")
-
-    # 6) Read clip properties for resolution & FPS
+    # 5) Set project video settings from clip
     props = clip.GetClipProperty()
     w, h = map(int, props['Resolution'].split('x'))
     fps = f"{float(props.get('FPS') or props.get('Frame rate')):.6f}".rstrip('0').rstrip('.')
-
+    print(f"📐 Configuring project video for: {w}x{h} @ {fps} fps")
     project.SetSetting("timelineUseCustomSettings", "1")
     project.SetSetting("timelineResolutionWidth", str(w))
     project.SetSetting("timelineResolutionHeight", str(h))
     project.SetSetting("timelineFrameRate", fps)
     project.SetSetting("timelinePlaybackFrameRate", fps)
 
-    # 7) Pick mono vs stereo template
-    channels, layout = get_audio_info(clip)
-    use_stereo = (channels == 2 and (layout == "" or "stereo" in layout))
-    drt_path = DRT_TEMPLATE_STEREO if use_stereo else DRT_TEMPLATE_MONO
-    print(f"🎧 Detected {channels}ch; using {'stereo' if use_stereo else 'mono'} template")
-
-    # 8) Import template timeline
+    # 6) Create and configure a clean timeline
     tl_name = f"TL_{base}"
-    timeline = mp.ImportTimelineFromFile(drt_path, {
-        "timelineName": tl_name,
-        "importSourceClips": False
-    })
+    print(f"⚙️ Creating empty timeline '{tl_name}'...")
+    timeline = mp.CreateEmptyTimeline(tl_name)
     if not timeline:
-        print(f"❌ Failed to import template: {drt_path}")
-        return False
+        print("❌ Failed to create empty timeline."); return False
+    
+    for i in reversed(range(1, timeline.GetTrackCount("audio") + 1)):
+        timeline.DeleteTrack("audio", i)
+    
+    timeline.AddTrack("video")
+    
+    channels, layout = get_audio_info(clip)
+    if channels > 0:
+        is_stereo = "stereo" in layout or channels == 2
+        if is_stereo:
+            print("🎧 Adding 1 STEREO audio track.")
+            timeline.AddTrack("audio", "stereo")
+        else:
+            print(f"🎧 Adding {channels} MONO audio track(s).")
+            for _ in range(channels):
+                timeline.AddTrack("audio", "mono")
 
-    # 9) Apply source timecode to the new timeline
-    if source_tc:
-        ok = timeline.SetStartTimecode(source_tc)
-        print(f"✅ SetStartTimecode returned: {ok}")
+        # --- NEW: Delete the default audio track (A1) ---
+        print("🧹 Deleting default audio track...")
+        timeline.DeleteTrack("audio", 1)
+        time.sleep(0.5) # Optional: pause briefly to let Resolve update
 
-    # 10) Double‑check timeline settings
-    timeline.SetSetting("timelineResolutionWidth", str(w))
-    timeline.SetSetting("timelineResolutionHeight", str(h))
-    timeline.SetSetting("timelineFrameRate", fps)
-    timeline.SetSetting("timelinePlaybackFrameRate", fps)
-    tw = timeline.GetSetting("timelineResolutionWidth")
-    th = timeline.GetSetting("timelineResolutionHeight")
-    tfps = timeline.GetSetting("timelineFrameRate")
-    print(f"📐 Timeline set to: {tw}x{th} @ {tfps} fps")
+    else:
+        print("🔇 No audio channels detected. Skipping audio track creation.")
+            
+    project.SetCurrentTimeline(timeline)
 
-    # 11) Append clip and prune empty tracks
+    # --- ROBUST TIMECODE HANDLING ---
+    raw_source_tc = get_timecode_from_clip(clip)
+    if raw_source_tc:
+        is_drop_frame = ';' in raw_source_tc
+        if is_drop_frame:
+            print(f"Detected Drop-Frame Timecode: {raw_source_tc}")
+            timeline.SetSetting("timelineDropFrameTimecode", "1")
+        else:
+            print(f"Detected Non-Drop-Frame Timecode: {raw_source_tc}")
+            timeline.SetSetting("timelineDropFrameTimecode", "0")
+        
+        # Pass the original, unaltered timecode string to Resolve
+        timeline.SetStartTimecode(raw_source_tc)
+    # --- END OF TIMECODE HANDLING ---
+
+    # 7) Append the clip
+    print("🤔 Appending clip...")
     if not mp.AppendToTimeline([clip]):
-        print("❌ Failed to append actual media to timeline.")
-        return False
-
-    used_tracks = {'video': set(), 'audio': set()}
-    for track_type in ['video', 'audio']:
-        for i in range(1, timeline.GetTrackCount(track_type) + 1):
-            if timeline.GetItemListInTrack(track_type, i):
-                used_tracks[track_type].add(i)
-    for track_type in ['video', 'audio']:
-        for i in reversed(range(1, timeline.GetTrackCount(track_type) + 1)):
-            if i not in used_tracks[track_type]:
-                timeline.DeleteTrack(track_type, i)
-
-    # 12) Load render preset (assumes you’ve already imported it) and set output
-    project.LoadRenderPreset(PRESET_NAME)
-    project.SetRenderSettings({
-        'TargetDir': str(out_folder),
-        'CustomName': base,
-    })
-
-    # 13) Optional DRX grade
+        print("❌ 'AppendToTimeline' command failed."); return False
+    
+    # 8) Verify clip is on timeline
+    time.sleep(1) 
+    if not timeline.GetItemListInTrack("video", 1):
+        print("❌ VERIFICATION FAILED! Video track is empty after append."); return False
+    print("✅ Verification successful. Clip is on the timeline.")
+    
+    # 9) Apply Grade
     if os.path.exists(drx_file):
         resolve.OpenPage("color")
         time.sleep(1)
-        for vc in project.GetCurrentTimeline().GetItemListInTrack('video', 1) or []:
-            fn = getattr(vc.GetNodeGraph(), 'ApplyGradeFromDRX', None)
-            if callable(fn) and fn(str(drx_file), 0):
-                print(f"✅ Applied grade to {vc.GetName()}")
-
-    # 14) Render
-    job_id = project.AddRenderJob()
-    if not job_id:
-        print(f"❌ Failed to queue render for {base}")
-        return False
-    print(f"🚀 Rendering: {rel}")
-    project.StartRendering()
-    while project.IsRenderingInProgress():
-        time.sleep(1)
-    print(f"🏁 Completed render: {rel}")
-
-    # 15) Verify integrity and timecode in the MP4
-    if is_readable(out_file):
-        print(f"✅ Integrity OK: {rel}")
-        mp4_tc = get_timecode_from_mp4(out_file)
-        if mp4_tc:
-            print(f"▶️ Rendered MP4 timecode: {mp4_tc}")
-            if source_tc and mp4_tc == source_tc:
-                print("🎉 SUCCESS: MP4 timecode matches source!")
+        timeline_clip = timeline.GetItemListInTrack('video', 1)[0]
+        if timeline_clip:
+            node_graph = timeline_clip.GetNodeGraph()
+            apply_grade_func = getattr(node_graph, 'ApplyGradeFromDRX', None)
+            if callable(apply_grade_func):
+                if apply_grade_func(str(drx_file), 1):
+                    print(f"✅ Applied grade to {timeline_clip.GetName()}")
+                else:
+                    print(f"⚠️ Failed to apply grade to {timeline_clip.GetName()} (API returned false).")
             else:
-                print("❌ WARNING: MP4 timecode does not match source.")
+                print(f"⚠️ Cannot apply grade: method not found on NodeGraph for {timeline_clip.GetName()}.")
+
+    # 10) Load render settings
+    project.LoadRenderPreset(PRESET_NAME)
+    project.SetRenderSettings({'TargetDir': str(out_folder), 'CustomName': base})
+
+    # 11) Render
+    resolve.OpenPage("deliver")
+    time.sleep(1)
+    job_id = project.AddRenderJob()
+    if not job_id: print(f"❌ Failed to queue render for {base}."); return False
+        
+    print(f"🚀 Rendering job {job_id}...")
+    project.StartRendering([job_id])
+    while project.IsRenderingInProgress(): time.sleep(1)
+    
+    status = project.GetRenderJobStatus(job_id).get('JobStatus')
+    print(f"🏁 Render job finished with status: {status}")
+    
+    if status != 'Complete': print(f"❌ Render did not complete successfully for {rel}"); return False
+    
+    # --- POST-RENDER VERIFICATION ---
+    if not is_readable(out_file):
+        print(f"⚠️ Integrity check failed on output file: {rel}"); return False
+    
+    print(f"✅ Integrity OK: {rel}")
+    if raw_source_tc:
+        mp4_tc = get_timecode_from_mp4(out_file)
+        # Normalize for comparison, as ffprobe often uses only colons
+        source_tc_normalized = raw_source_tc.replace(';', ':')
+        if mp4_tc and mp4_tc == source_tc_normalized:
+            print(f"🎉 SUCCESS: MP4 timecode '{mp4_tc}' matches source.")
+        elif mp4_tc:
+            print(f"❌ WARNING: MP4 timecode '{mp4_tc}' does NOT match source '{source_tc_normalized}'.")
         else:
-            print("⚠️ No timecode tag found in MP4 (or ffprobe missing).")
-        return True
+            print("⚠️ Could not read timecode from rendered MP4 for verification.")
+    
+    return True
 
-    print(f"⚠️ Integrity still failed: {rel}")
-    return False
 
-# __main__ block with folder-based skip logic
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Archive & transcode via Resolve")
@@ -448,9 +496,9 @@ if __name__ == '__main__':
         rel = f.relative_to(src)
         stem = f.stem.lower()
 
-        # Skip side‑cars that have same name as media in the same directory
+        # Skip side-cars that have same name as media in the same directory
         if stem in media_stems_by_dir.get(f.parent, set()):
-            print(f"🔕 Skipping side‑car asset: {rel}")
+            print(f"🔕 Skipping side-car asset: {rel}")
             continue
 
         # Copy if not already present with correct size
@@ -476,7 +524,7 @@ if __name__ == '__main__':
 
     print("\n✅ Archive & transcode complete!")
 
-    # ── Prevent the window from closing immediately ──
+    # -- Prevent the window from closing immediately --
     if IS_WIN:
         # on Windows, this will show "Press any key to continue . . ."
         os.system("pause")
