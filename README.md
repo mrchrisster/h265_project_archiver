@@ -43,7 +43,7 @@ It is meant for video production companies who want to archive their old project
 
 | Component               | Requirement                                         |
 |------------------------|-----------------------------------------------------|
-| OS                     | Windows 10/11                                       |
+| OS                     | Windows 10/11 or Mac OSX                                       |
 | Python Version         | Python 3.9+                                         |
 | Python Packages        | `pyav` (optional, recommended for integrity checks) |
 | Video Editor           | DaVinci Resolve **Studio** (not free version)       |
